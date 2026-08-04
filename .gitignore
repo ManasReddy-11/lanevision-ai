@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+
+# Node
+node_modules/
+frontend/dist/
+dist/
+build/
+.npm/
+
+# Environment
+.env
+.env.*
+!.env.example
+.env.local
+
+# Uploads and processed output
+uploads/
+processed/
+*.processing.mp4
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.bin
