@@ -30,8 +30,8 @@ processed/
 *.processing.mp4
 
 # Training data and outputs
-dataset/
-datasets/
+/dataset/
+/datasets/
 training_outputs/
 backend/training/outputs/
 
