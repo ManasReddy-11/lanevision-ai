@@ -38,3 +38,4 @@ class VideoDetectionResponse(BaseModel):
     result: VideoDetectionResultReference
     metrics: VideoDetectionMetrics
     warnings: list[str] = Field(default_factory=list)
+    ai_metadata: Optional[dict] = None

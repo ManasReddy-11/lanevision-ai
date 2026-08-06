@@ -29,6 +29,25 @@ uploads/
 processed/
 *.processing.mp4
 
+# Training data and outputs
+dataset/
+datasets/
+training_outputs/
+backend/training/outputs/
+
+# TuSimple dataset contents (real data should not be committed)
+datasets/tusimple/clips/
+datasets/tusimple/**/*.jpg
+datasets/tusimple/**/*.jpeg
+datasets/tusimple/**/*.png
+datasets/tusimple/**/*.json
+
+# Local one-off inspection scripts
+backend/count_prepared_dataset.py
+backend/inspect_generated_pngs.py
+backend/inspect_tusimple_layout.py
+backend/validate_tusimple_real.py
+
 # OS / editor
 .DS_Store
 .vscode/

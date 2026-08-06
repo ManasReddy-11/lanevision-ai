@@ -16,7 +16,7 @@ service = DetectionService()
 @router.post("/detect/image", response_model=DetectionResponse, status_code=status.HTTP_200_OK)
 async def detect_image(file: UploadFile = File(...), algorithm: str = Form(default="classic")) -> DetectionResponse:
     """Process an uploaded road image with the selected lane detector."""
-    if algorithm not in {"classic", "advanced"}:
+    if algorithm not in {"classic", "advanced", "ai"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported algorithm")
     try:
         return await service.process_upload(file, algorithm=algorithm)

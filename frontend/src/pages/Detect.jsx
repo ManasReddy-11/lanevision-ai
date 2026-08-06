@@ -42,6 +42,24 @@ function Detect() {
     return `${(result.metrics.confidence * 100).toFixed(1)}%`;
   }, [result]);
 
+  const aiMetadataItems = useMemo(() => {
+    if (algorithm !== 'ai' || !result?.ai_metadata) {
+      return [];
+    }
+
+    const entries = [
+      ['Model', result.ai_metadata.model_name],
+      ['Architecture', result.ai_metadata.architecture],
+      ['Device', result.ai_metadata.device],
+      ['Checkpoint loaded', result.ai_metadata.checkpoint_loaded != null ? (result.ai_metadata.checkpoint_loaded ? 'Yes' : 'No') : null],
+      ['Input size', Array.isArray(result.ai_metadata.input_size) ? `${result.ai_metadata.input_size[0]} × ${result.ai_metadata.input_size[1]}` : null],
+      ['Inference time', result.ai_metadata.inference_time_ms != null ? `${result.ai_metadata.inference_time_ms.toFixed(1)} ms` : null],
+      ['Confidence', result.ai_metadata.confidence != null ? `${(result.ai_metadata.confidence * 100).toFixed(1)}%` : null],
+    ];
+
+    return entries.filter(([, value]) => value != null && value !== '');
+  }, [algorithm, result]);
+
   const resetState = () => {
     setSelectedFile(null);
     setError(null);
@@ -60,11 +78,11 @@ function Detect() {
               </div>
               <h1 className="mt-3 text-3xl font-semibold text-white">Upload a road image and analyze lane boundaries</h1>
               <p className="mt-3 max-w-2xl text-slate-400">
-                Use the classical OpenCV pipeline to inspect lane boundaries, lane center, and vehicle offset from a single image.
+                Compare classic OpenCV lane detection with the new AI-assisted segmentation path and inspect lane center and vehicle offset from a single image.
               </p>
             </div>
             <div className="rounded-full border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-slate-300">
-              {algorithm === 'advanced' ? 'Advanced algorithm • curved-lane fitting' : 'Classic algorithm • local processing'}
+              {algorithm === 'advanced' ? 'Advanced algorithm • curved-lane fitting' : algorithm === 'ai' ? 'AI segmentation • neural mask inference' : 'Classic algorithm • local processing'}
             </div>
           </div>
         </div>
@@ -85,6 +103,7 @@ function Detect() {
                 <select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
                   <option value="classic">Classic OpenCV</option>
                   <option value="advanced">Advanced Lane Detection</option>
+                  <option value="ai">AI Segmentation</option>
                 </select>
               </label>
               <div>
@@ -92,11 +111,14 @@ function Detect() {
                 <p className="mt-1 text-sm text-slate-400">Educational summary of the selected algorithm.</p>
               </div>
               <div className="rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs uppercase tracking-[0.25em] text-slate-300">
-                Classical CV
+                {algorithm === 'ai' ? 'Neural AI' : algorithm === 'advanced' ? 'Curved-Lane CV' : 'Classical CV'}
               </div>
             </div>
             <ol className="mt-6 space-y-3 text-sm text-slate-300">
-              {["White/Yellow Color Filtering", "Gaussian Blur", "Canny Edge Detection", "Region of Interest", "Hough Line Transform", "Lane Classification", "Weighted Lane Fitting", "Lane Overlay"].map((step) => (
+              {(algorithm === 'ai'
+                ? ["Semantic Segmentation", "Mask Postprocessing", "Lane Extraction", "Lane Overlay", "Confidence Estimation"]
+                : ["White/Yellow Color Filtering", "Gaussian Blur", "Canny Edge Detection", "Region of Interest", "Hough Line Transform", "Lane Classification", "Weighted Lane Fitting", "Lane Overlay"]
+              ).map((step) => (
                 <li key={step} className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2">
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-sky-500/15 text-xs font-semibold text-sky-400">{step[0]}</span>
                   <span>{step}</span>
@@ -112,7 +134,7 @@ function Detect() {
               <ScanLine size={20} />
             </div>
             <h3 className="mt-4 text-xl font-semibold text-white">Analyzing road geometry...</h3>
-            <p className="mt-2 text-sm text-slate-400">The backend is validating the image and running the classical lane detector.</p>
+            <p className="mt-2 text-sm text-slate-400">The backend is validating the image and running the selected lane detector pipeline.</p>
           </div>
         ) : null}
 
@@ -189,9 +211,32 @@ function Detect() {
               </div>
               <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm text-slate-300">
                 <Info size={16} className="text-sky-400" />
-                Confidence is a heuristic score derived from lane geometry and segment consistency.
+                {algorithm === 'ai' ? 'AI results are based on segmentation confidence and may fall back to a graceful unavailable-state if no checkpoint is configured.' : 'Confidence is a heuristic score derived from lane geometry and segment consistency.'}
               </div>
             </div>
+
+            {algorithm === 'ai' ? (
+              <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.25em] text-sky-400">
+                  <ScanLine size={16} />
+                  AI Model / Neural Inference
+                </div>
+                {aiMetadataItems.length ? (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {aiMetadataItems.map(([label, value]) => (
+                      <div key={label} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+                        <p className="text-sm text-slate-400">{label}</p>
+                        <p className="mt-1 font-semibold text-white">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-amber-700/40 bg-amber-900/20 p-4 text-sm text-amber-200">
+                    AI model checkpoint is not configured. Neural inference is unavailable.
+                  </div>
+                )}
+              </div>
+            ) : null}
 
             {result.warnings?.length ? (
               <div className="mt-6 rounded-2xl border border-amber-700/40 bg-amber-900/20 p-4 text-sm text-amber-200">

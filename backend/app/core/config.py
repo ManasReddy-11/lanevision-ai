@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     temporal_smoothing_alpha: float = Field(default=0.35)
     max_missing_lane_frames: int = Field(default=2)
     geometry_jump_threshold: float = Field(default=250.0)
+    ai_enabled: bool = Field(default=True)
+    ai_model_path: str | None = Field(default=None)
+    ai_device: str = Field(default="auto")
+    ai_input_width: int = Field(default=320)
+    ai_input_height: int = Field(default=160)
+    ai_mask_threshold: float = Field(default=0.5)
+    ai_min_component_area: int = Field(default=64)
+    ai_overlay_alpha: float = Field(default=0.35)
+    ai_warmup: bool = Field(default=True)
+    ai_model_name: str = Field(default="deeplabv3_mobilenet_v3_large")
+    ai_architecture: str = Field(default="deeplabv3_mobilenet_v3_large")
+    ai_lane_class_id: int = Field(default=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",

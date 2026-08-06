@@ -267,6 +267,18 @@ class VideoProcessingService:
                 (finalization_started_at - processing_started_at) * 1000.0 if finalization_started_at is not None and processing_started_at is not None else 0.0,
             )
 
+            ai_metadata = None
+            if algorithm == "ai" and processing_times:
+                ai_metadata = {
+                    "model_name": "lane-segmentation-unet",
+                    "architecture": "u-net",
+                    "device": "cpu",
+                    "checkpoint_loaded": False,
+                    "frames_processed": frames_processed,
+                    "average_inference_time_ms": float(sum(processing_times) / len(processing_times)),
+                    "average_confidence": average_confidence,
+                }
+
             response = VideoDetectionResponse(
                 id=str(uuid.uuid4()),
                 status="success",
@@ -292,6 +304,7 @@ class VideoProcessingService:
                     both_lane_detection_rate=both_lane_detection_rate,
                 ),
                 warnings=warnings,
+                ai_metadata=ai_metadata,
             )
             self.history_service.record_detection(
                 kind="video",

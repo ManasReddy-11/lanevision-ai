@@ -45,3 +45,4 @@ class DetectionResponse(BaseModel):
     metrics: DetectionMetrics
     lanes: DetectionLanes
     warnings: list[str] = Field(default_factory=list)
+    ai_metadata: Optional[dict] = None

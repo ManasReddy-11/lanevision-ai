@@ -1,0 +1,20 @@
+dataset:
+  root: dataset
+  image_extension: .png
+  mask_extension: .png
+training:
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 5
+  min_delta: 0.001
+  input_size: [320, 160]
+  num_workers: 0
+  seed: 42
+  device: auto
+  bce_weight: 0.7
+  dice_weight: 0.3
+  save_dir: backend/models
+  production_checkpoint_path: backend/models/lane_segmentation.pth
+  output_dir: training_outputs
