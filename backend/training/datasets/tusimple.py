@@ -116,59 +116,92 @@ def _convert_annotation_to_mask(image_shape: tuple[int, int], lanes: list[list[f
     return mask if has_any_valid_points else np.zeros((height, width), dtype=np.uint8)
 
 
-def _resolve_image_path(source_root: Path, raw_file: str, annotation_path: Path | None = None) -> Path:
-    candidate = Path(raw_file)
-    candidates: list[Path] = []
-    if candidate.is_absolute():
-        candidates.append(candidate)
-    else:
-        search_roots: list[Path] = [source_root]
-        if annotation_path is not None:
-            annotation_dir = annotation_path.parent
-            search_roots.extend([
-                annotation_dir,
-                annotation_dir / "clips",
-                annotation_dir.parent,
-                annotation_dir.parent / "clips",
-                source_root / annotation_dir.name,
-                source_root / annotation_dir.name / "clips",
-            ])
+def _child_directories(directory: Path, cache: dict[Path, list[Path]] | None = None) -> list[Path]:
+    if cache is not None and directory in cache:
+        return cache[directory]
+    try:
+        children = sorted(child for child in directory.iterdir() if child.is_dir())
+    except OSError:
+        children = []
+    if cache is not None:
+        cache[directory] = children
+    return children
 
-        for child in sorted(source_root.iterdir()):
-            if child.is_dir():
-                search_roots.extend([
-                    child,
-                    child / "clips",
-                    source_root / child.name,
-                    source_root / child.name / "clips",
-                ])
 
-        search_roots.extend([
-            source_root / "clips",
-            source_root / candidate.name,
-            source_root / "clips" / candidate.name,
-        ])
+def _resolve_image_path(source_root: Path, raw_file: str, annotation_path: Path | None = None, cache: dict[Path, list[Path]] | None = None) -> Path:
+    """Resolve a TuSimple raw_file to an image file.
 
-        for root in search_roots:
-            candidates.append(root / candidate)
-            candidates.append(root / candidate.name)
-            candidates.append(root / "clips" / candidate)
-            candidates.append(root / "clips" / candidate.name)
+    raw_file is tried relative to the annotation file's directory and each of its ancestors up to source_root, and
+    relative to every immediate subdirectory of those directories. This covers the official layout, where
+    label_data_*.json sits inside train_set/ next to clips/, while test_label.json sits next to test_set/ and its
+    raw_file values (clips/...) are relative to test_set/. Only the full relative path is accepted: a file that merely
+    shares the basename is never used, because every TuSimple keyframe is named 20.jpg. When nothing matches, the
+    first candidate is returned so callers can check that it does not exist.
+    """
+    source_root = Path(source_root)
+    if Path(raw_file).is_absolute():
+        return Path(raw_file)
+    relative = Path(_normalize_raw_file(raw_file))
 
-    unique_candidates: list[Path] = []
-    for path in candidates:
-        if path not in unique_candidates:
-            unique_candidates.append(path)
+    bases: list[Path] = []
+    if annotation_path is not None:
+        directory = Path(annotation_path).parent
+        while True:
+            bases.append(directory)
+            if directory == source_root or source_root not in directory.parents:
+                break
+            directory = directory.parent
+    if source_root not in bases:
+        bases.append(source_root)
 
-    for path in unique_candidates:
-        if path.exists():
-            return path
+    for base in bases:
+        for root in (base, *_child_directories(base, cache)):
+            path = root / relative
+            if path.is_file():
+                return path
+    return bases[0] / relative
 
-    if candidate.parts and len(candidate.parts) > 1:
-        fallback = source_root / candidate.name
-        if fallback.exists():
-            return fallback
-    return unique_candidates[0] if unique_candidates else source_root / candidate
+
+def _sample_key(raw_file: str) -> str:
+    """Identity of a TuSimple sample: its raw_file path from the clips/ component onward.
+
+    test_label.json writes clips/0530/<clip>/20.jpg while test_label_new.json writes test_set/clips/0530/<clip>/20.jpg
+    for the same image; both map to the same key.
+    """
+    normalized = _normalize_raw_file(raw_file)
+    parts = normalized.split("/")
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].lower() == "clips":
+            return "/".join(parts[index:])
+    return normalized
+
+
+def _has_lane_points(record: dict[str, Any]) -> bool:
+    lanes = record.get("lanes")
+    if not isinstance(lanes, list) or not isinstance(record.get("h_samples"), list):
+        return False
+    for lane in lanes:
+        if isinstance(lane, list) and sum(1 for x in lane if isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0) >= 2:
+            return True
+    return False
+
+
+def _filter_conversion_files(source_root: Path, annotation_files: list[Path]) -> list[Path]:
+    """Keep the annotation files the converter reads, in an order that is the same on every platform.
+
+    seg_label/ (and its test.json / train_val.json) only repeats the label_data_*.json and test_label.json records.
+    """
+    files = []
+    for path in annotation_files:
+        relative = path.relative_to(source_root).as_posix()
+        if path.name.lower() in {"test.json", "train_val.json"} or "seg_label" in relative:
+            continue
+        files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(source_root).as_posix())
+
+
+def _conversion_annotation_files(source_root: Path) -> list[Path]:
+    return _filter_conversion_files(source_root, _discover_annotation_files(source_root))
 
 
 def _discover_annotation_files(source_root: Path) -> list[Path]:
@@ -190,24 +223,27 @@ def inspect_tusimple_source(source_root: str | Path, sample_size: int = 8) -> di
     clip_dirs = sorted({str(path) for path in source_root.rglob("clips") if path.is_dir()})
     image_dirs = sorted({str(path.parent) for path in source_root.rglob("*.jpg")})
 
+    # Sample the first records of every annotation file the converter would read, so that one file whose records
+    # do not resolve cannot hide the files that do.
     samples: list[dict[str, Any]] = []
     resolved_samples = 0
     sampled_records = 0
-    for annotation_path in annotation_files:
+    cache: dict[Path, list[Path]] = {}
+    for annotation_path in _conversion_annotation_files(source_root):
         try:
             records = _load_annotation_records(annotation_path)
         except ValueError:
             continue
-        for record in records:
-            raw_file = record.get("raw_file")
-            if not raw_file:
-                continue
-            resolved_path = _resolve_image_path(source_root, raw_file, annotation_path=annotation_path)
-            exists = resolved_path.exists()
+        for index, record in enumerate(record for record in records if record.get("raw_file")):
+            if index >= sample_size:
+                break
+            raw_file = record["raw_file"]
+            resolved_path = _resolve_image_path(source_root, raw_file, annotation_path=annotation_path, cache=cache)
+            exists = resolved_path.is_file()
             sampled_records += 1
             if exists:
                 resolved_samples += 1
-            if len(samples) < sample_size:
+            if index == 0:
                 samples.append(
                     {
                         "annotation_file": str(annotation_path),
@@ -216,10 +252,6 @@ def inspect_tusimple_source(source_root: str | Path, sample_size: int = 8) -> di
                         "exists": exists,
                     }
                 )
-            if len(samples) >= sample_size and sampled_records >= sample_size:
-                break
-        if len(samples) >= sample_size and sampled_records >= sample_size:
-            break
 
     return {
         "source_root": str(source_root),
@@ -233,43 +265,64 @@ def inspect_tusimple_source(source_root: str | Path, sample_size: int = 8) -> di
 
 
 def discover_tusimple_source_root(search_root: str | Path, sample_size: int = 8) -> dict[str, Any]:
+    """Find the directory under search_root to use as the TuSimple source root.
+
+    Candidates are search_root, its immediate subdirectories, and every directory between search_root and an
+    annotation file, so a dataset mounted several levels deep (as Kaggle does) is found. Each candidate is scored by
+    how many sampled records, taken from every annotation file the converter would read under it, have lane points
+    and resolve to an existing image. Ties prefer a root with train_set/test_set subdirectories, then annotation files
+    directly inside it, then the deepest (tightest) root.
+    """
     search_root = Path(search_root)
-    candidate_roots = [search_root]
-    if search_root.exists():
-        candidate_roots.extend(sorted(path for path in search_root.iterdir() if path.is_dir()))
-
-    inspections: list[dict[str, Any]] = []
-    best_match: dict[str, Any] | None = None
-    best_score = (-1, -1)
-    seen: set[Path] = set()
-    for candidate_root in candidate_roots:
-        if candidate_root in seen or not candidate_root.exists():
-            continue
-        seen.add(candidate_root)
-        inspection = inspect_tusimple_source(candidate_root, sample_size=sample_size)
-        annotation_count = len(inspection["annotation_files"])
-        resolved_count = int(inspection["resolved_record_count"])
-        has_split_dirs = any((candidate_root / name).is_dir() for name in ("train_set", "test_set"))
-        direct_annotation_count = len(list(candidate_root.glob("*.json")))
-        inspection["score"] = {
-            "annotation_count": annotation_count,
-            "resolved_record_count": resolved_count,
-            "has_split_dirs": has_split_dirs,
-            "direct_annotation_count": direct_annotation_count,
-        }
-        inspections.append(inspection)
-        score = (resolved_count, int(has_split_dirs), direct_annotation_count, annotation_count)
-        if score > best_score:
-            best_score = score
-            best_match = inspection
-
-    if best_match is None or best_score[0] <= 0:
+    if not search_root.exists():
         raise FileNotFoundError(f"Unable to discover a usable TuSimple source root under {search_root}")
 
+    all_annotation_files = _discover_annotation_files(search_root)
+    candidate_roots: set[Path] = {search_root, *(path for path in search_root.iterdir() if path.is_dir())}
+    for annotation_path in all_annotation_files:
+        directory = annotation_path.parent
+        while directory != search_root and search_root in directory.parents:
+            candidate_roots.add(directory)
+            directory = directory.parent
+
+    records_cache: dict[Path, list[dict[str, Any]]] = {}
+    child_cache: dict[Path, list[Path]] = {}
+    scored: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
+    for candidate_root in sorted(candidate_roots, key=lambda path: path.as_posix()):
+        files = _filter_conversion_files(candidate_root, [path for path in all_annotation_files if candidate_root in path.parents])
+        sampled = usable = 0
+        for annotation_path in files:
+            if annotation_path not in records_cache:
+                try:
+                    records_cache[annotation_path] = _load_annotation_records(annotation_path)
+                except ValueError:
+                    records_cache[annotation_path] = []
+            for record in [record for record in records_cache[annotation_path] if record.get("raw_file")][:sample_size]:
+                sampled += 1
+                if _has_lane_points(record) and _resolve_image_path(candidate_root, record["raw_file"], annotation_path=annotation_path, cache=child_cache).is_file():
+                    usable += 1
+        has_split_dirs = any((candidate_root / name).is_dir() for name in ("train_set", "test_set"))
+        direct_annotation_count = sum(1 for path in files if path.parent == candidate_root)
+        score = (usable, int(has_split_dirs), direct_annotation_count, len(candidate_root.parts))
+        scored.append((score, {
+            "source_root": str(candidate_root),
+            "annotation_file_count": len(files),
+            "sampled_record_count": sampled,
+            "usable_record_count": usable,
+            "has_split_dirs": has_split_dirs,
+            "direct_annotation_count": direct_annotation_count,
+        }))
+
+    best_score, best_candidate = max(scored, key=lambda item: item[0])
+    if best_score[0] <= 0:
+        raise FileNotFoundError(f"Unable to discover a usable TuSimple source root under {search_root}")
+
+    best_match = inspect_tusimple_source(best_candidate["source_root"], sample_size=sample_size)
+    best_match["score"] = best_candidate
     return {
         "search_root": str(search_root),
         "best_match": best_match,
-        "candidates_considered": inspections,
+        "candidates_considered": [candidate for _, candidate in sorted(scored, key=lambda item: item[0], reverse=True)],
     }
 
 
@@ -291,7 +344,34 @@ def _ensure_empty_output_root(output_root: Path) -> None:
                 )
 
 
-def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path, lane_thickness: int = 2, split_seed: int = 42, validation_ratio: float = 0.1, test_ratio: float = 0.1) -> dict[str, Any]:
+SPLIT_MODES = ("random", "official")
+
+
+def _official_split_of(annotation_path: Path) -> str | None:
+    """Split of an annotation file under the common TuSimple benchmark protocol.
+
+    train: label_data_0313.json + label_data_0601.json, val: label_data_0531.json, test: test_label*.json.
+    Other files (for example test_tasks_0627.json, which has no lane points) belong to no split.
+    """
+    name = annotation_path.name.lower()
+    if name.startswith("test_label"):
+        return "test"
+    if name == "label_data_0531.json":
+        return "val"
+    if name.startswith("label_data"):
+        return "train"
+    return None
+
+
+def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path, lane_thickness: int = 2, split_seed: int = 42, validation_ratio: float = 0.1, test_ratio: float = 0.1, split_mode: str = "random") -> dict[str, Any]:
+    """Convert TuSimple annotations into train/val/test image and mask folders.
+
+    split_mode "random" (default) pools every annotation file and splits the unique samples at random using
+    split_seed, validation_ratio and test_ratio. split_mode "official" keeps the benchmark split described in
+    _official_split_of, so the official test images never enter training; the ratios and seed are then unused.
+    """
+    if split_mode not in SPLIT_MODES:
+        raise ValueError(f"split_mode must be one of {SPLIT_MODES}, got {split_mode!r}")
     source_root = Path(source_root)
     output_root = Path(output_root)
     annotation_files = _discover_annotation_files(source_root)
@@ -299,21 +379,38 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         raise FileNotFoundError(f"No TuSimple annotation files found under {source_root}")
     _ensure_empty_output_root(output_root)
 
+    conversion_files = _conversion_annotation_files(source_root)
+    ignored_files: list[str] = []
+    if split_mode == "official":
+        ignored_files = [str(path) for path in conversion_files if _official_split_of(path) is None]
+        conversion_files = [path for path in conversion_files if _official_split_of(path) is not None]
+        missing_splits = {"train", "val", "test"} - {_official_split_of(path) for path in conversion_files}
+        if missing_splits:
+            raise FileNotFoundError(f"split_mode='official' needs annotation files for {sorted(missing_splits)} under {source_root}")
+
     record_entries: list[tuple[dict[str, Any], Path]] = []
-    for annotation_path in annotation_files:
-        if annotation_path.name.lower() in {"test.json", "train_val.json"}:
-            continue
-        if "seg_label" in str(annotation_path):
-            continue
+    for annotation_path in conversion_files:
         try:
             for record in _load_annotation_records(annotation_path):
                 record_entries.append((record, annotation_path))
         except ValueError as exc:
             raise ValueError(f"Unable to parse {annotation_path}: {exc}") from exc
 
+    if split_mode == "official":
+        # The same image must not be listed under two official splits; that would leak it across them.
+        splits_by_key: dict[str, set[str]] = {}
+        for record, annotation_path in record_entries:
+            if record.get("raw_file"):
+                splits_by_key.setdefault(_sample_key(record["raw_file"]), set()).add(_official_split_of(annotation_path))
+        crossing = sorted(key for key, splits in splits_by_key.items() if len(splits) > 1)
+        if crossing:
+            raise ValueError(f"{len(crossing)} images are annotated in more than one official split, e.g. {crossing[:3]}")
+
     manifest: dict[str, Any] = {
         "source_root": str(source_root),
         "annotation_files": [str(path) for path in annotation_files],
+        "split_mode": split_mode,
+        "ignored_annotation_files": ignored_files,
         "total_annotations": len(record_entries),
         "valid_pairs": 0,
         "invalid_missing_images": 0,
@@ -331,12 +428,14 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
             (output_root / split_name / folder_name).mkdir(parents=True, exist_ok=True)
 
     # Each image may become exactly one sample. Records are validated first; among valid records, annotation
-    # files are read in sorted order, so the first valid reference to a raw_file wins deterministically and
-    # later valid references are counted as duplicates instead of being converted again.
+    # files are read in a platform-independent sorted order, so the first valid reference to a sample wins
+    # deterministically and later valid references are counted as duplicates instead of being converted again.
     converted_raw_files: dict[str, dict[str, Any]] = {}
     claimed_images: dict[str, str] = {}
     claimed_output_names: dict[str, str] = {}
     sample_names = []
+    sample_splits: dict[str, str] = {}
+    child_cache: dict[Path, list[Path]] = {}
     for record, annotation_path in record_entries:
         raw_file = record.get("raw_file")
         lanes = record.get("lanes", [])
@@ -345,8 +444,8 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
             manifest["invalid_annotations"] += 1
             continue
 
-        image_path = _resolve_image_path(source_root, raw_file, annotation_path=annotation_path)
-        if not image_path.exists():
+        image_path = _resolve_image_path(source_root, raw_file, annotation_path=annotation_path, cache=child_cache)
+        if not image_path.is_file():
             manifest["invalid_missing_images"] += 1
             continue
 
@@ -361,7 +460,7 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
             manifest["empty_masks"] += 1
             continue
 
-        raw_key = _normalize_raw_file(raw_file)
+        raw_key = _sample_key(raw_file)
         if raw_key in converted_raw_files:
             manifest["duplicate_references"] += 1
             previous = converted_raw_files[raw_key]
@@ -387,9 +486,14 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         cv2.imwrite(str(image_output_path), image)
         cv2.imwrite(str(mask_output_path), mask)
         sample_names.append(f"{safe_stem}.png")
+        if split_mode == "official":
+            sample_splits[f"{safe_stem}.png"] = _official_split_of(annotation_path)
         manifest["valid_pairs"] += 1
 
-    split_manifest = build_split_manifest(sample_names, seed=split_seed, validation_ratio=validation_ratio, test_ratio=test_ratio)
+    if split_mode == "official":
+        split_manifest = {split: [name for name in sample_names if sample_splits[name] == split] for split in ("train", "val", "test")}
+    else:
+        split_manifest = build_split_manifest(sample_names, seed=split_seed, validation_ratio=validation_ratio, test_ratio=test_ratio)
     manifest["split"] = split_manifest
 
     # Every sample was staged in train/. Move (not copy) val and test samples out so the splits stay disjoint.
@@ -474,6 +578,7 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--dataset", required=True)
     validate_parser.add_argument("--lane-thickness", type=int, default=2)
     validate_parser.add_argument("--split-seed", type=int, default=42)
+    validate_parser.add_argument("--split-mode", choices=SPLIT_MODES, default="random")
     preview_parser = subparsers.add_parser("preview", help="Generate preview images for converted masks")
     preview_parser.add_argument("--dataset", required=True)
     preview_parser.add_argument("--output-dir", default=None)
@@ -487,7 +592,7 @@ def main() -> None:
         report = discover_tusimple_source_root(args.dataset, sample_size=args.sample_size)
         print(json.dumps(report, indent=2))
     elif args.command == "validate":
-        manifest = convert_tusimple_to_dataset(args.dataset, args.dataset + "_prepared", lane_thickness=args.lane_thickness, split_seed=args.split_seed)
+        manifest = convert_tusimple_to_dataset(args.dataset, args.dataset + "_prepared", lane_thickness=args.lane_thickness, split_seed=args.split_seed, split_mode=args.split_mode)
         print(json.dumps(manifest, indent=2))
     elif args.command == "preview":
         preview_paths = generate_preview_samples(args.dataset, output_dir=args.output_dir)

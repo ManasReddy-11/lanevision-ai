@@ -44,23 +44,45 @@ The helper inspects candidate roots and reports:
 - sample `raw_file` values
 - resolved image paths
 
+Candidate roots are the search root, its immediate subdirectories, and every directory between the search root and an annotation file, so a dataset mounted several levels deep is found (for example `/kaggle/input/datasets/<owner>/<slug>/...`). Each candidate is scored on sampled records from every annotation file the converter would read under it.
+
+A `raw_file` is resolved relative to its annotation file's directory, that directory's ancestors up to the source root, and the immediate subdirectories of those. This matches the official layout, where `test_label.json` sits next to `test_set/` and its `clips/...` paths are relative to `test_set/`. Only the full relative path counts: an image that merely shares the file name (every TuSimple keyframe is `20.jpg`) is never used.
+
+Audited layout of the Kaggle dataset `manideep1108/tusimple` (version 5):
+
+```text
+<dataset root>/
+  test_label_new.json            same 2782 records as TUSimple/test_label.json, raw_file spelled test_set/clips/...
+  TUSimple/
+    test_label.json              2782 test records, raw_file clips/... relative to test_set/
+    test_set/clips/...           test frames
+    test_set/test_tasks_0627.json  test task list without lane points
+    train_set/label_data_0313.json, label_data_0531.json, label_data_0601.json   2858 + 358 + 410 records
+    train_set/clips/...          training frames
+    train_set/seg_label/...      segmentation PNGs plus test.json/train_val.json copies (not read by the converter)
+```
+
 ## 4. Prepare the dataset into writable Kaggle storage
 
 Do not modify `/kaggle/input`.
 Prepare the dataset into `/kaggle/working`.
 
 ```bash
-python -m backend.training.kaggle_gpu_prep prepare --search-root /kaggle/input --prepared-root /kaggle/working/tusimple_prepared
+python -m backend.training.kaggle_gpu_prep prepare --search-root /kaggle/input --prepared-root /kaggle/working/tusimple_prepared --split-mode official
 ```
 
 This uses the existing TuSimple converter and preserves local Windows behavior.
 
 If discovery cannot pick the right directory, pass the TuSimple root explicitly with `--raw-root <directory that holds the annotation JSON files and clips>`.
 
+Split modes:
+- `--split-mode official` (recommended for TuSimple): train = `label_data_0313.json` + `label_data_0601.json`, val = `label_data_0531.json`, test = `test_label*.json`. The official test images never enter training, so test metrics stay comparable with the TuSimple benchmark. Files outside these splits (such as `test_tasks_0627.json`) are listed in the manifest as `ignored_annotation_files`. Conversion stops if one image is annotated in two splits or if a split has no annotation file.
+- `--split-mode random` (default, previous behavior): pools every annotation file, including the official test labels, and splits the unique samples at random (`--split-seed`, 10% val, 10% test).
+
 Split and integrity guarantees of the converter:
 - every valid sample is written to exactly one of `train/`, `val/`, or `test/`; validation and test samples are moved out of `train/`, so the splits never share an image
-- an image referenced by several annotation files (for example `test_label.json` and `test_label_new.json`) is converted once; the first valid reference in sorted file order wins, and the manifest reports `duplicate_references` and `conflicting_duplicates` (same image, different lanes)
-- if two different `raw_file` values resolve to the same image file, only the first is kept and the manifest reports `ambiguous_samples`; a non-zero value means image resolution needs review before training
+- an image referenced by several annotation files is converted once. Samples are identified by their path from `clips/` onward, so `test_label.json` (`clips/...`) and `test_label_new.json` (`test_set/clips/...`) refer to the same samples. The first valid reference in sorted file order wins, and the manifest reports `duplicate_references` and `conflicting_duplicates` (same image, different lanes)
+- if two different samples resolve to the same image file or output name, only the first is kept and the manifest reports `ambiguous_samples`; a non-zero value means image resolution needs review before training
 - conversion refuses an output root whose split folders already contain files; prepare into an empty directory
 - `prepare` refuses to reuse an existing prepared dataset whose splits overlap
 

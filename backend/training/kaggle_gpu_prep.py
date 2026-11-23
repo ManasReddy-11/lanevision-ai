@@ -104,7 +104,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "counts": _prepared_dataset_counts(prepared_root),
         }
 
-    manifest = convert_tusimple_to_dataset(raw_root, prepared_root, lane_thickness=args.lane_thickness, split_seed=args.split_seed)
+    manifest = convert_tusimple_to_dataset(raw_root, prepared_root, lane_thickness=args.lane_thickness, split_seed=args.split_seed, split_mode=getattr(args, "split_mode", "random"))
     return {
         "prepared_root": str(prepared_root),
         "raw_root": str(raw_root),
@@ -283,6 +283,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--prepared-root", default="/kaggle/working/tusimple_prepared")
     prepare_parser.add_argument("--lane-thickness", type=int, default=2)
     prepare_parser.add_argument("--split-seed", type=int, default=42)
+    prepare_parser.add_argument("--split-mode", choices=("random", "official"), default="random", help="official: train=label_data_0313+0601, val=label_data_0531, test=test_label*.json")
 
     preflight_parser = subparsers.add_parser("preflight", help="Run a CUDA-only Kaggle preflight diagnostic")
     preflight_parser.add_argument("--prepared-root", default="/kaggle/working/tusimple_prepared")
