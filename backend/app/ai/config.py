@@ -19,7 +19,7 @@ class AIConfig:
     warmup: bool = True
     model_name: str = "lane_segmentation_unet"
     architecture: str = "u-net"
-    lane_class_id: int = 1
+    lane_class_id: int = 0
     metadata: dict[str, object] = field(default_factory=dict)
 
     @classmethod

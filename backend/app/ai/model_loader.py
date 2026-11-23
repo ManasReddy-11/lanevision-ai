@@ -184,7 +184,7 @@ class ModelLoader:
                 "architecture": self.config.architecture,
                 "device": self._resolve_device().type,
                 "checkpoint_loaded": False,
-                "input_size": [self.config.input_width, self.config.input_width],
+                "input_size": [self.config.input_width, self.config.input_height],
                 "error": "Model not loaded",
             }
         return {

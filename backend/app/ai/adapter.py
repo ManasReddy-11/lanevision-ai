@@ -30,7 +30,8 @@ class AILaneDetectorAdapter:
 
         try:
             inference_result = self.engine.run(frame)
-            mask = self.postprocessor.process(inference_result["mask"], inference_result["original_size"])
+            # MaskPostprocessor expects (height, width); inference_result["original_size"] is (width, height).
+            mask = self.postprocessor.process(inference_result["mask"], frame.shape[:2])
             left_lane, right_lane, _ = self.extractor.extract(mask, frame)
             overlay = self.overlay_renderer.render(frame, mask)
             confidence = self._calculate_confidence(mask, left_lane, right_lane)

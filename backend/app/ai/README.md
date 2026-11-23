@@ -23,6 +23,11 @@ Expected format:
 - PyTorch state dict or checkpoint dictionary containing a model state dict
 - The loader expects the architecture defined in models/unet.py and will reject incompatible checkpoints with a clear error
 
+Output contract (must match training):
+- The U-Net returns two output channels, but training (`backend/training/losses.py` and `metrics.py`) optimizes and scores only channel 0, with a sigmoid
+- Inference therefore reads the lane probability as `sigmoid(logits[AI_LANE_CLASS_ID])` with `AI_LANE_CLASS_ID=0` by default; channel 1 is never trained and must not be used
+- The post-processed mask is resized back to the input frame's height and width, so non-square frames such as 1280x720 keep their shape
+
 Runtime behavior:
 - The model is loaded once and cached for reuse
 - Inference uses `model.eval()` and `torch.inference_mode()`

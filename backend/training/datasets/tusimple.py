@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 from pathlib import Path
 from typing import Any
@@ -272,12 +273,31 @@ def discover_tusimple_source_root(search_root: str | Path, sample_size: int = 8)
     }
 
 
+def _normalize_raw_file(raw_file: str) -> str:
+    normalized = str(raw_file).strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
+def _ensure_empty_output_root(output_root: Path) -> None:
+    for split_name in ("train", "val", "test"):
+        for folder_name in ("images", "masks"):
+            folder = output_root / split_name / folder_name
+            if folder.is_dir() and any(folder.iterdir()):
+                raise FileExistsError(
+                    f"Output folder {folder} already contains files. Prepare into an empty output root so that "
+                    "stale samples from an earlier run cannot leak across splits."
+                )
+
+
 def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path, lane_thickness: int = 2, split_seed: int = 42, validation_ratio: float = 0.1, test_ratio: float = 0.1) -> dict[str, Any]:
     source_root = Path(source_root)
     output_root = Path(output_root)
     annotation_files = _discover_annotation_files(source_root)
     if not annotation_files:
         raise FileNotFoundError(f"No TuSimple annotation files found under {source_root}")
+    _ensure_empty_output_root(output_root)
 
     record_entries: list[tuple[dict[str, Any], Path]] = []
     for annotation_path in annotation_files:
@@ -300,6 +320,9 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         "invalid_annotations": 0,
         "masks_generated": 0,
         "empty_masks": 0,
+        "duplicate_references": 0,
+        "conflicting_duplicates": 0,
+        "ambiguous_samples": 0,
         "split": {},
     }
 
@@ -307,6 +330,12 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         for folder_name in ("images", "masks"):
             (output_root / split_name / folder_name).mkdir(parents=True, exist_ok=True)
 
+    # Each image may become exactly one sample. Records are validated first; among valid records, annotation
+    # files are read in sorted order, so the first valid reference to a raw_file wins deterministically and
+    # later valid references are counted as duplicates instead of being converted again.
+    converted_raw_files: dict[str, dict[str, Any]] = {}
+    claimed_images: dict[str, str] = {}
+    claimed_output_names: dict[str, str] = {}
     sample_names = []
     for record, annotation_path in record_entries:
         raw_file = record.get("raw_file")
@@ -332,10 +361,27 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
             manifest["empty_masks"] += 1
             continue
 
+        raw_key = _normalize_raw_file(raw_file)
+        if raw_key in converted_raw_files:
+            manifest["duplicate_references"] += 1
+            previous = converted_raw_files[raw_key]
+            if previous.get("lanes") != lanes or previous.get("h_samples") != h_samples:
+                manifest["conflicting_duplicates"] += 1
+            continue
+
+        # Two different raw_file values must never share one image or one output name.
+        image_key = os.path.normcase(os.path.abspath(str(image_path)))
+        safe_stem = str(Path(raw_key).with_suffix(""))
+        safe_stem = safe_stem.replace("/", "_").replace("\\", "_").replace(".", "_")
+        if image_key in claimed_images or safe_stem in claimed_output_names:
+            manifest["ambiguous_samples"] += 1
+            continue
+
         manifest["masks_generated"] += 1
 
-        safe_stem = str(Path(raw_file).with_suffix(""))
-        safe_stem = safe_stem.replace("/", "_").replace("\\", "_").replace(".", "_")
+        converted_raw_files[raw_key] = record
+        claimed_images[image_key] = raw_key
+        claimed_output_names[safe_stem] = raw_key
         image_output_path = output_root / "train" / "images" / f"{safe_stem}.png"
         mask_output_path = output_root / "train" / "masks" / f"{safe_stem}.png"
         cv2.imwrite(str(image_output_path), image)
@@ -346,18 +392,14 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
     split_manifest = build_split_manifest(sample_names, seed=split_seed, validation_ratio=validation_ratio, test_ratio=test_ratio)
     manifest["split"] = split_manifest
 
-    for split_name in ("train", "val", "test"):
+    # Every sample was staged in train/. Move (not copy) val and test samples out so the splits stay disjoint.
+    for split_name in ("val", "test"):
         split_dir = output_root / split_name
         for item in split_manifest.get(split_name, []):
-            source_image = output_root / "train" / "images" / item
-            source_mask = output_root / "train" / "masks" / item
-            destination_image = split_dir / "images" / item
-            destination_mask = split_dir / "masks" / item
-            destination_image.parent.mkdir(parents=True, exist_ok=True)
-            destination_mask.parent.mkdir(parents=True, exist_ok=True)
-            if source_image.exists() and source_mask.exists():
-                destination_image.write_bytes(source_image.read_bytes())
-                destination_mask.write_bytes(source_mask.read_bytes())
+            for folder_name in ("images", "masks"):
+                staged = output_root / "train" / folder_name / item
+                if staged.exists():
+                    staged.replace(split_dir / folder_name / item)
 
     return manifest
 
@@ -400,13 +442,25 @@ def validate_dataset(dataset_root: str | Path) -> dict[str, int]:
         "val_count": 0,
         "validation_count": 0,
         "test_count": 0,
+        "unpaired_files": 0,
+        "train_val_overlap": 0,
+        "train_test_overlap": 0,
+        "val_test_overlap": 0,
     }
+    names: dict[str, set[str]] = {}
     for split_name in ("train", "val", "test"):
         images_dir = dataset_root / split_name / "images"
         masks_dir = dataset_root / split_name / "masks"
+        image_names = {path.name for path in images_dir.glob("*.png")} if images_dir.exists() else set()
+        mask_names = {path.name for path in masks_dir.glob("*.png")} if masks_dir.exists() else set()
         if images_dir.exists() and masks_dir.exists():
-            counts[f"{split_name}_count"] = len(list(images_dir.glob("*.png")))
+            counts[f"{split_name}_count"] = len(image_names)
+        counts["unpaired_files"] += len(image_names ^ mask_names)
+        names[split_name] = image_names
     counts["validation_count"] = counts.get("val_count", counts["validation_count"])
+    counts["train_val_overlap"] = len(names["train"] & names["val"])
+    counts["train_test_overlap"] = len(names["train"] & names["test"])
+    counts["val_test_overlap"] = len(names["val"] & names["test"])
     return counts
 
 

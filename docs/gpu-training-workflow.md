@@ -55,6 +55,17 @@ python -m backend.training.kaggle_gpu_prep prepare --search-root /kaggle/input -
 
 This uses the existing TuSimple converter and preserves local Windows behavior.
 
+If discovery cannot pick the right directory, pass the TuSimple root explicitly with `--raw-root <directory that holds the annotation JSON files and clips>`.
+
+Split and integrity guarantees of the converter:
+- every valid sample is written to exactly one of `train/`, `val/`, or `test/`; validation and test samples are moved out of `train/`, so the splits never share an image
+- an image referenced by several annotation files (for example `test_label.json` and `test_label_new.json`) is converted once; the first valid reference in sorted file order wins, and the manifest reports `duplicate_references` and `conflicting_duplicates` (same image, different lanes)
+- if two different `raw_file` values resolve to the same image file, only the first is kept and the manifest reports `ambiguous_samples`; a non-zero value means image resolution needs review before training
+- conversion refuses an output root whose split folders already contain files; prepare into an empty directory
+- `prepare` refuses to reuse an existing prepared dataset whose splits overlap
+
+Datasets prepared before these guarantees were added kept every validation and test sample in `train/` as well. Delete such a dataset and prepare it again; do not train or report metrics on it.
+
 ## 5. Run the CUDA preflight
 
 ```bash

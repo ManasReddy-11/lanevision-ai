@@ -89,6 +89,14 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     raw_root = Path(args.raw_root) if args.raw_root else Path(discover_tusimple_source_root(args.search_root)["best_match"]["source_root"])
     prepared_root = Path(args.prepared_root)
     if prepared_root.exists() and (prepared_root / "train" / "images").exists():
+        validation = validate_dataset(prepared_root)
+        overlap = {key: validation[key] for key in ("train_val_overlap", "train_test_overlap", "val_test_overlap")}
+        if any(overlap.values()):
+            raise RuntimeError(
+                f"Existing prepared dataset {prepared_root} shares samples between splits {overlap}. "
+                "It was likely produced by a converter version that left val/test samples in train/. "
+                "Remove it and prepare again into an empty directory."
+            )
         return {
             "prepared_root": str(prepared_root),
             "raw_root": str(raw_root),

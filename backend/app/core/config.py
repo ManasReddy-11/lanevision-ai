@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     ai_min_component_area: int = Field(default=64)
     ai_overlay_alpha: float = Field(default=0.35)
     ai_warmup: bool = Field(default=True)
-    ai_model_name: str = Field(default="deeplabv3_mobilenet_v3_large")
-    ai_architecture: str = Field(default="deeplabv3_mobilenet_v3_large")
-    ai_lane_class_id: int = Field(default=1)
+    ai_model_name: str = Field(default="lane_segmentation_unet")
+    ai_architecture: str = Field(default="u-net")
+    ai_lane_class_id: int = Field(default=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

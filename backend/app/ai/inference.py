@@ -31,8 +31,9 @@ class AIInferenceEngine:
         if isinstance(logits, torch.Tensor):
             logits = logits.squeeze(0)
             logits = logits.detach().cpu()
-            probs = torch.softmax(logits, dim=0)
-            lane_prob = probs[self.config.lane_class_id].numpy()
+            # Training optimizes BCE + Dice on sigmoid(channel 0) (see backend/training/losses.py), so the lane
+            # probability must be read the same way. A softmax across channels would mix in an untrained channel.
+            lane_prob = torch.sigmoid(logits[self.config.lane_class_id]).numpy()
             mask = lane_prob >= self.config.mask_threshold
         else:
             raise AIModelError("Model output was not a tensor")
