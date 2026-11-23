@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -405,6 +406,11 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         crossing = sorted(key for key, splits in splits_by_key.items() if len(splits) > 1)
         if crossing:
             raise ValueError(f"{len(crossing)} images are annotated in more than one official split, e.g. {crossing[:3]}")
+        # Convert test, then val, then train, so that when the same picture appears under different raw_file paths in
+        # two splits (TuSimple ships a few frames in both label_data_0531.json and test_label.json), the test split
+        # keeps it and the earlier split drops its copy.
+        split_priority = {"test": 0, "val": 1, "train": 2}
+        record_entries.sort(key=lambda entry: split_priority[_official_split_of(entry[1])])
 
     manifest: dict[str, Any] = {
         "source_root": str(source_root),
@@ -420,6 +426,7 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
         "duplicate_references": 0,
         "conflicting_duplicates": 0,
         "ambiguous_samples": 0,
+        "identical_image_duplicates": 0,
         "split": {},
     }
 
@@ -433,6 +440,7 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
     converted_raw_files: dict[str, dict[str, Any]] = {}
     claimed_images: dict[str, str] = {}
     claimed_output_names: dict[str, str] = {}
+    claimed_contents: set[str] = set()
     sample_names = []
     sample_splits: dict[str, str] = {}
     child_cache: dict[Path, list[Path]] = {}
@@ -476,11 +484,19 @@ def convert_tusimple_to_dataset(source_root: str | Path, output_root: str | Path
             manifest["ambiguous_samples"] += 1
             continue
 
+        # The same picture can also be stored under two different raw_file paths (the official test set holds a few
+        # frames as both clips/0530/<id>_0/20.jpg and clips/0531/<id>/20.jpg). Keep one sample per distinct image.
+        content_key = hashlib.sha1(image.tobytes()).hexdigest()
+        if content_key in claimed_contents:
+            manifest["identical_image_duplicates"] += 1
+            continue
+
         manifest["masks_generated"] += 1
 
         converted_raw_files[raw_key] = record
         claimed_images[image_key] = raw_key
         claimed_output_names[safe_stem] = raw_key
+        claimed_contents.add(content_key)
         image_output_path = output_root / "train" / "images" / f"{safe_stem}.png"
         mask_output_path = output_root / "train" / "masks" / f"{safe_stem}.png"
         cv2.imwrite(str(image_output_path), image)

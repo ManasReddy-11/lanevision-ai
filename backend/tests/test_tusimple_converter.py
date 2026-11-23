@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+import shutil
 from pathlib import Path
 
 import cv2
@@ -24,6 +26,21 @@ def _split_names(output_root: Path, folder: str = "images") -> dict[str, set[str
 
 def _lane_record(raw_file: str, offset: int = 0) -> dict:
     return {"raw_file": raw_file, "lanes": [[10 + offset, 20, 30], [40, 45, 50]], "h_samples": [10, 30, 50]}
+
+
+_IMAGE_COUNTER = itertools.count(1)
+
+
+def _distinct_image() -> np.ndarray:
+    """A 64x64 image whose pixels differ from every other one these tests write.
+
+    The converter keeps one sample per distinct picture, so fixtures that stand for different frames must differ.
+    """
+    # The counter's bits as 8x8-pixel black/white blocks: unlike near-equal flat colours, this survives JPEG encoding.
+    value = next(_IMAGE_COUNTER)
+    bits = np.array([(value >> bit) & 1 for bit in range(64)], dtype=np.uint8).reshape(8, 8) * 255
+    blocks = np.kron(bits, np.ones((8, 8), dtype=np.uint8))
+    return np.repeat(blocks[:, :, None], 3, axis=2)
 
 
 def test_tusimple_converter_handles_valid_and_invalid_annotations(tmp_path: Path) -> None:
@@ -109,7 +126,7 @@ def test_tusimple_converter_keeps_distinct_samples_with_different_paths(tmp_path
     for relative_path in ["clips/0313-1/6040/20.jpg", "clips/0313-2/6040/20.jpg"]:
         image_path = train_set / relative_path
         image_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(image_path), np.zeros((64, 64, 3), dtype=np.uint8))
+        cv2.imwrite(str(image_path), _distinct_image())
 
     annotation_path = train_set / "label_data_0313.json"
     annotation_path.write_text(
@@ -158,7 +175,7 @@ def test_tusimple_converter_writes_disjoint_splits_that_cover_every_valid_pair(t
     raw_files = [f"clips/0313-1/{index}/20.jpg" for index in range(20)]
     for raw_file in raw_files:
         (train_set / raw_file).parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(train_set / raw_file), np.zeros((64, 64, 3), dtype=np.uint8))
+        cv2.imwrite(str(train_set / raw_file), _distinct_image())
     (train_set / "label_data_0313.json").write_text("\n".join(json.dumps(_lane_record(raw)) for raw in raw_files), encoding="utf-8")
 
     output_root = tmp_path / "prepared"
@@ -184,7 +201,7 @@ def test_tusimple_converter_converts_each_image_once_when_annotation_files_repea
     raw_files = [f"clips/0530/{index}/20.jpg" for index in range(10)]
     for raw_file in raw_files:
         (source_root / raw_file).parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(source_root / raw_file), np.zeros((64, 64, 3), dtype=np.uint8))
+        cv2.imwrite(str(source_root / raw_file), _distinct_image())
     (source_root / "test_label.json").write_text("\n".join(json.dumps(_lane_record(raw)) for raw in raw_files), encoding="utf-8")
     repeated = [_lane_record(raw) for raw in raw_files]
     repeated[0] = _lane_record(raw_files[0], offset=5)
@@ -267,13 +284,13 @@ def _write_kaggle_tusimple_layout(dataset_root: Path) -> None:
         records = [_lane_record(f"clips/{date}/{index}/20.jpg") for index in range(count)]
         for record in records:
             (tusimple / "train_set" / record["raw_file"]).parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(tusimple / "train_set" / record["raw_file"]), np.zeros((64, 64, 3), dtype=np.uint8))
+            cv2.imwrite(str(tusimple / "train_set" / record["raw_file"]), _distinct_image())
         _write_records(tusimple / "train_set" / name, records)
         train_records += records
     test_records = [_lane_record(f"clips/0530/{index}/20.jpg") for index in range(3)]
     for record in test_records:
         (tusimple / "test_set" / record["raw_file"]).parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(tusimple / "test_set" / record["raw_file"]), np.zeros((64, 64, 3), dtype=np.uint8))
+        cv2.imwrite(str(tusimple / "test_set" / record["raw_file"]), _distinct_image())
     _write_records(tusimple / "test_label.json", test_records)
     _write_records(dataset_root / "test_label_new.json", [{**record, "raw_file": "test_set/" + record["raw_file"]} for record in test_records])
     _write_records(tusimple / "test_set" / "test_tasks_0627.json", [{**record, "lanes": []} for record in test_records])
@@ -334,6 +351,34 @@ def test_tusimple_converter_official_split_rejects_an_image_annotated_in_two_spl
 
     with pytest.raises(ValueError, match="more than one official split"):
         convert_tusimple_to_dataset(dataset_root, tmp_path / "prepared", split_mode="official")
+
+
+def test_tusimple_converter_keeps_one_sample_per_distinct_picture_and_prefers_the_test_split(tmp_path: Path) -> None:
+    # Mirrors the audited data: one label_data_0531.json frame reappears in the test set as clips/0530/<id>_0/20.jpg,
+    # and one test frame is stored as both clips/0530/<id>_0/20.jpg and clips/0531/<id>/20.jpg.
+    dataset_root = tmp_path / "tusimple"
+    _write_kaggle_tusimple_layout(dataset_root)
+    tusimple = dataset_root / "TUSimple"
+    extra = {
+        "clips/0530/1492627478052569489_0/20.jpg": tusimple / "train_set" / "clips" / "0531" / "0" / "20.jpg",
+        "clips/0531/1492626328182638628/20.jpg": tusimple / "test_set" / "clips" / "0530" / "1" / "20.jpg",
+    }
+    for raw_file, original in extra.items():
+        (tusimple / "test_set" / raw_file).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, tusimple / "test_set" / raw_file)
+    test_label = tusimple / "test_label.json"
+    test_label.write_text(test_label.read_text(encoding="utf-8") + "".join("\n" + json.dumps(_lane_record(raw)) for raw in extra), encoding="utf-8")
+
+    output_root = tmp_path / "prepared"
+    manifest = convert_tusimple_to_dataset(dataset_root, output_root, split_mode="official")
+
+    images = _split_names(output_root)
+    assert "clips_0531_0_20.png" not in images["val"]
+    assert "clips_0530_1492627478052569489_0_20.png" in images["test"]
+    assert manifest["identical_image_duplicates"] == 2
+    assert len(images["val"]) == 1
+    assert len(images["test"]) == 3 + 1
+    assert sum(len(names) for names in images.values()) == manifest["valid_pairs"]
 
 
 def test_tusimple_converter_official_split_requires_train_val_and_test_files(tmp_path: Path) -> None:

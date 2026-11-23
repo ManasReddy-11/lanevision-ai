@@ -83,10 +83,13 @@ Split and integrity guarantees of the converter:
 - every valid sample is written to exactly one of `train/`, `val/`, or `test/`; validation and test samples are moved out of `train/`, so the splits never share an image
 - an image referenced by several annotation files is converted once. Samples are identified by their path from `clips/` onward, so `test_label.json` (`clips/...`) and `test_label_new.json` (`test_set/clips/...`) refer to the same samples. The first valid reference in sorted file order wins, and the manifest reports `duplicate_references` and `conflicting_duplicates` (same image, different lanes)
 - if two different samples resolve to the same image file or output name, only the first is kept and the manifest reports `ambiguous_samples`; a non-zero value means image resolution needs review before training
+- each distinct picture (identical decoded pixels) becomes one sample, even when it is stored under two different `raw_file` paths; extra copies are reported as `identical_image_duplicates`. With `--split-mode official` the test split is converted first, so a picture shared with validation or training stays in test and the other copy is dropped. TuSimple ships 7 `label_data_0531.json` frames again in the test set (as `clips/0530/<id>_0/20.jpg`), and 12 test frames twice (as `clips/0530/<id>_0/20.jpg` and `clips/0531/<id>/20.jpg`), all with identical lanes
 - conversion refuses an output root whose split folders already contain files; prepare into an empty directory
 - `prepare` refuses to reuse an existing prepared dataset whose splits overlap
 
 Datasets prepared before these guarantees were added kept every validation and test sample in `train/` as well. Delete such a dataset and prepare it again; do not train or report metrics on it.
+
+Measured result for `manideep1108/tusimple` version 5 with `--split-mode official`: 9190 annotation records, 6389 samples (3268 train, 351 val, 2770 test), 2770 `duplicate_references` (the `test_label_new.json` copies), 31 `identical_image_duplicates`, and no missing images, invalid records, empty masks, or ambiguous samples.
 
 ## 5. Run the CUDA preflight
 
