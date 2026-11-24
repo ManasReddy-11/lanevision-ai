@@ -7,7 +7,7 @@ import yaml
 
 SCHEDULERS = ("plateau", "cosine", "step", "none")
 LOSSES = ("bce_dice", "focal_dice", "tversky", "focal_tversky", "bce")
-MONITORED_METRICS = ("dice", "iou", "recall", "f1")
+MONITORED_METRICS = ("dice", "iou", "recall", "f1", "tusimple_accuracy")
 
 
 @dataclass(slots=True)
@@ -20,6 +20,9 @@ class TrainingConfig:
     train_mask_dilation: int = 0  # thicken TRAIN targets by this many pixels each side (at prepared-mask resolution);
     #                               val/test masks are never changed, so pixel metrics keep one definition
     num_workers: int = 0
+    preload: bool = False  # decode and resize every train/val sample once, into memory (much faster epochs)
+    tusimple_val_labels: list[str] | None = None  # TuSimple label files of the val images: adds per-epoch official
+    #                                               accuracy / FP / FN on the validation split (monitor: tusimple_accuracy)
 
     # Optimisation
     epochs: int = 30
@@ -79,6 +82,10 @@ class TrainingConfig:
             raise ValueError(f"input_size must be (width, height), both multiples of 16 (four U-Net poolings); got {self.input_size}")
         if self.train_mask_dilation < 0:
             raise ValueError("train_mask_dilation must be >= 0")
+        if self.monitor == "tusimple_accuracy" and not self.tusimple_val_labels:
+            raise ValueError("monitor tusimple_accuracy needs tusimple_val_labels")
+        if isinstance(self.tusimple_val_labels, str):
+            self.tusimple_val_labels = [self.tusimple_val_labels]
         return self
 
     @classmethod

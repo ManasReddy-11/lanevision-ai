@@ -143,6 +143,34 @@ def _sample_name(raw_file: str) -> str:
     return str(Path(_sample_key(raw_file)).with_suffix("")).replace("/", "_").replace("\\", "_").replace(".", "_") + ".png"
 
 
+def records_for_images(label_paths, image_names) -> list[dict[str, Any]]:
+    """The TuSimple label record of each prepared image name (clips_..._20.png), in the given order."""
+    from backend.training.datasets.tusimple import _load_annotation_records
+
+    by_name = {_sample_name(record["raw_file"]): record for path in label_paths for record in _load_annotation_records(Path(path))}
+    missing = [name for name in image_names if name not in by_name]
+    if missing:
+        raise ValueError(f"{len(missing)} images have no TuSimple label record (e.g. {missing[0]})")
+    return [by_name[name] for name in image_names]
+
+
+def score_probabilities(probabilities, records, width: int = 1280, height: int = 720, geometry=None, extend_bottom: bool = True) -> dict[str, float]:
+    """Official TuSimple accuracy / FP / FN of lane-probability maps (any resolution; resized to width x height), using
+    the production lane extraction. The run-time rule is not applied (timing is not measured here)."""
+    import cv2
+
+    from backend.app.ai.lane_geometry import LaneGeometryConfig, extract_lanes
+
+    geometry = geometry or LaneGeometryConfig()
+    totals = np.zeros(3)
+    for probability, record in zip(probabilities, records):
+        full = cv2.resize(np.asarray(probability, dtype=np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
+        lanes = extract_lanes(full, geometry, rows=record["h_samples"])
+        totals += bench(lanes_to_tusimple(lanes, record["h_samples"], width, extend_bottom=extend_bottom), record["lanes"], record["h_samples"], 0.0)
+    accuracy, fp, fn = totals / max(len(records), 1)
+    return {"tusimple_accuracy": float(accuracy), "tusimple_fp": float(fp), "tusimple_fn": float(fn)}
+
+
 def _draw_example(image: np.ndarray, gt_lanes, pred_lanes, h_samples, title: str) -> np.ndarray:
     import cv2
 

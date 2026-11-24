@@ -62,7 +62,7 @@ def test_run_writes_structured_logs(tmp_path, data) -> None:
     assert [row["epoch"] for row in rows] == [1, 2]
     assert {"train_loss", "val_loss", "dice", "iou", "precision", "recall", "learning_rate", "epoch_seconds", "train_images_per_second"} <= set(rows[0])
     run = json.loads((outputs / "config.json").read_text(encoding="utf-8"))
-    assert run["config"]["input_size"] == [64, 32] and run["resolved"] == {"device": "cpu", "amp": False}
+    assert run["config"]["input_size"] == [64, 32] and run["resolved"] == {"device": "cpu", "amp": False, "preload_seconds": None}
     assert run["dataset"]["train"]["images"] == 6 and run["dataset"]["test"]["images"] == 3
     assert json.loads((outputs / "summary.json").read_text(encoding="utf-8"))["epochs_run"] == 2
     assert result["summary"]["curves"] in ("curves.png", None)
@@ -188,3 +188,68 @@ def test_invalid_settings_are_rejected() -> None:
         TrainingConfig(loss="hinge").validate()
     with pytest.raises(ValueError):
         TrainingConfig(scheduler="cyclic").validate()
+
+
+def test_preloaded_samples_are_identical_to_decoded_ones(tmp_path) -> None:
+    root = _dataset(tmp_path / "data")
+    from backend.training.dataset import LaneSegmentationDataset
+
+    args = (str(root / "train" / "images"), str(root / "train" / "masks"))
+    plain = LaneSegmentationDataset(*args, input_size=(32, 16), transform=build_train_transforms((32, 16), mask_dilation=1))
+    cached = LaneSegmentationDataset(*args, input_size=(32, 16), transform=build_train_transforms((32, 16), mask_dilation=1), preload=True)
+    for index in range(len(plain)):
+        for a, b in zip(plain[index], cached[index]):
+            assert torch.equal(a, b)
+
+
+def _tusimple_dataset(root: Path) -> tuple[Path, Path]:
+    """Prepared-style splits of 1280x720 frames named like TuSimple samples, and their label file."""
+    h_samples = list(range(240, 720, 10))
+    records = []
+    for split, count in (("train", 4), ("val", 3), ("test", 2)):
+        (root / split / "images").mkdir(parents=True)
+        (root / split / "masks").mkdir(parents=True)
+        for index in range(count):
+            clip = f"{split}{index}"
+            lanes = [[float(400 + 300 * k + (y - 240) * (k - 0.5) * 0.4) for y in h_samples] for k in range(2)]
+            image = np.full((720, 1280, 3), 40, dtype=np.uint8)
+            mask = np.zeros((720, 1280), dtype=np.uint8)
+            for lane in lanes:
+                points = np.array(list(zip(lane, h_samples)), dtype=np.int32)
+                cv2.polylines(image, [points], False, (230, 230, 230), 8)
+                cv2.polylines(mask, [points], False, 255, 5)
+            cv2.imwrite(str(root / split / "images" / f"clips_0531_{clip}_20.png"), image)
+            cv2.imwrite(str(root / split / "masks" / f"clips_0531_{clip}_20.png"), mask)
+            records.append({"raw_file": f"clips/0531/{clip}/20.jpg", "lanes": lanes, "h_samples": h_samples})
+    labels = root / "labels.json"
+    labels.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+    return root, labels
+
+
+def test_tusimple_scoring_of_probability_maps(tmp_path) -> None:
+    from backend.training.tusimple_benchmark import records_for_images, score_probabilities
+
+    root, labels = _tusimple_dataset(tmp_path / "data")
+    names = sorted(path.name for path in (root / "val" / "images").iterdir())
+    records = records_for_images([labels], names)
+    perfect = [cv2.resize(cv2.imread(str(root / "val" / "masks" / name), cv2.IMREAD_GRAYSCALE), (320, 160)).astype(np.float32) / 255.0 for name in names]
+    assert score_probabilities(perfect, records)["tusimple_accuracy"] == pytest.approx(1.0)
+    empty = [np.zeros((160, 320), dtype=np.float32) for _ in names]
+    assert score_probabilities(empty, records) == {"tusimple_accuracy": 0.0, "tusimple_fp": 0.0, "tusimple_fn": 1.0}
+    with pytest.raises(ValueError, match="no TuSimple label record"):
+        records_for_images([labels], ["clips_0531_unknown_20.png"])
+
+
+def test_training_reports_and_can_select_on_validation_tusimple_accuracy(tmp_path) -> None:
+    root, labels = _tusimple_dataset(tmp_path / "data")
+    config = _config(tmp_path, dataset_root=str(root), input_size=(64, 32), epochs=2, early_stopping=False, preload=True,
+                     tusimple_val_labels=[str(labels)], monitor="tusimple_accuracy")
+    result = train(config)
+    for row in result["history"]:
+        assert 0.0 <= row["tusimple_accuracy"] <= 1.0 and 0.0 <= row["tusimple_fn"] <= 1.0
+    summary = result["summary"]
+    assert summary["monitor"] == "tusimple_accuracy"
+    assert summary["best_value"] == max(row["tusimple_accuracy"] for row in result["history"][:summary["best_epoch"]])
+    assert "tusimple_accuracy" in summary["restored_best_val_metrics"]
+    with pytest.raises(ValueError, match="needs tusimple_val_labels"):
+        TrainingConfig(monitor="tusimple_accuracy").validate()

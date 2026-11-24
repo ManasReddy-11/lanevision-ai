@@ -36,6 +36,7 @@ from backend.training.dataset import LaneSegmentationDataset
 from backend.training.losses import build_loss
 from backend.training.metrics import confusion_counts, metrics_from_counts
 from backend.training.transforms import build_inference_transform, build_train_transforms
+from backend.training.tusimple_benchmark import records_for_images, score_probabilities
 from backend.training.utils import ensure_dir, load_checkpoint, restore_rng_state, rng_state, save_checkpoint, seed_worker, set_seed
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -121,12 +122,14 @@ def _loader(dataset, config: TrainingConfig, shuffle: bool, generator: torch.Gen
                       persistent_workers=False, worker_init_fn=seed_worker, generator=generator)
 
 
-def validate(model: nn.Module, dataloader: DataLoader, device: torch.device, config: TrainingConfig, loss_fn=None) -> tuple[float, dict[str, float]]:
-    """Validation loss and pixel metrics over the whole split (counts summed over batches, threshold 0.5)."""
+def validate(model: nn.Module, dataloader: DataLoader, device: torch.device, config: TrainingConfig, loss_fn=None, tusimple_records=None) -> tuple[float, dict[str, float]]:
+    """Validation loss and pixel metrics over the whole split (counts summed over batches, threshold 0.5), plus the
+    official TuSimple accuracy / FP / FN when the split's label records are given (in dataset order)."""
     loss_fn = loss_fn or build_loss(config)
     model.eval()
     running_loss = 0.0
     counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0, "tn": 0.0}
+    probabilities = []
     with torch.no_grad():
         for images, masks in dataloader:
             images = images.to(device)
@@ -135,7 +138,12 @@ def validate(model: nn.Module, dataloader: DataLoader, device: torch.device, con
             running_loss += loss_fn(logits, masks).item() * images.size(0)
             for key, value in confusion_counts(logits, masks).items():
                 counts[key] += value
-    return running_loss / max(len(dataloader.dataset), 1), metrics_from_counts(counts)
+            if tusimple_records is not None:
+                probabilities.extend(torch.sigmoid(logits[:, 0].float()).cpu().numpy())
+    metrics = metrics_from_counts(counts)
+    if tusimple_records is not None:
+        metrics.update(score_probabilities(probabilities, tusimple_records))
+    return running_loss / max(len(dataloader.dataset), 1), metrics
 
 
 def plot_curves(history: list[dict[str, Any]], path: Path) -> bool:
@@ -185,10 +193,14 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
 
     root = Path(config.dataset_root)
     splits = check_split_separation(root, content=check_content)
+    loading_started = time.perf_counter()
     train_dataset = LaneSegmentationDataset(str(root / "train" / "images"), str(root / "train" / "masks"), input_size=config.input_size,
-                                            transform=build_train_transforms(config.input_size, mask_dilation=config.train_mask_dilation))
+                                            transform=build_train_transforms(config.input_size, mask_dilation=config.train_mask_dilation), preload=config.preload)
     val_dataset = LaneSegmentationDataset(str(root / "val" / "images"), str(root / "val" / "masks"), input_size=config.input_size,
-                                          transform=build_inference_transform(config.input_size))
+                                          transform=build_inference_transform(config.input_size), preload=config.preload)
+    preload_seconds = round(time.perf_counter() - loading_started, 1) if config.preload else None
+    # Lane-level validation metric: label records of the val images only (matched by prepared file name).
+    val_records = records_for_images(config.tusimple_val_labels, [path.name for path in val_dataset.image_paths]) if config.tusimple_val_labels else None
     generator = torch.Generator()
     train_loader = _loader(train_dataset, config, shuffle=True, generator=generator, pin_memory=device.type == "cuda")
     val_loader = _loader(val_dataset, config, shuffle=False, generator=None, pin_memory=device.type == "cuda")
@@ -224,7 +236,7 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
             stop_reason = checkpoint.get("stop_reason", "stopped early")
         print(f"Resuming from {resume}: next epoch {start_epoch}, best {config.monitor} {best_value:.4f} at epoch {best_epoch}", flush=True)
 
-    run_info = {"experiment_name": config.experiment_name, "config": config.to_dict(), "resolved": {"device": str(device), "amp": amp},
+    run_info = {"experiment_name": config.experiment_name, "config": config.to_dict(), "resolved": {"device": str(device), "amp": amp, "preload_seconds": preload_seconds},
                 "git": _git_state(), "dataset": splits, "environment": _environment(device), "resumed_from": resume}
     (output_dir / "config.json").write_text(json.dumps(run_info, indent=2), encoding="utf-8")
     metrics_log = (output_dir / "metrics.jsonl").open("a" if resume else "w", encoding="utf-8")
@@ -250,7 +262,7 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
                 running_loss += loss.item() * images.size(0)
             train_seconds = time.perf_counter() - started
 
-            val_loss, val_metrics = validate(model, val_loader, device, config, loss_fn)
+            val_loss, val_metrics = validate(model, val_loader, device, config, loss_fn, val_records)
             learning_rate = optimizer.param_groups[0]["lr"]
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_metrics[config.monitor])
@@ -264,7 +276,8 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-            row = {"epoch": epoch, "train_loss": running_loss / max(len(train_dataset), 1), "val_loss": val_loss, **{k: val_metrics[k] for k in ("dice", "iou", "precision", "recall", "f1")},
+            row = {"epoch": epoch, "train_loss": running_loss / max(len(train_dataset), 1), "val_loss": val_loss,
+                   **{k: val_metrics[k] for k in ("dice", "iou", "precision", "recall", "f1", "tusimple_accuracy", "tusimple_fp", "tusimple_fn") if k in val_metrics},
                    "learning_rate": learning_rate, "epoch_seconds": round(time.perf_counter() - started, 2), "train_images_per_second": round(len(train_dataset) / max(train_seconds, 1e-9), 2),
                    "improved": improved}
             if device.type == "cuda":
@@ -286,6 +299,7 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
             save_checkpoint(model, last_path, epoch, val_metrics, optimizer, scheduler=scheduler, best_metric=best_value, config=config.to_dict(), extra=state)
             print(f"epoch={epoch}/{config.epochs} train_loss={row['train_loss']:.4f} val_loss={val_loss:.4f} dice={val_metrics['dice']:.4f} iou={val_metrics['iou']:.4f} "
                   f"precision={val_metrics['precision']:.4f} recall={val_metrics['recall']:.4f} lr={learning_rate:.6f} {row['epoch_seconds']:.0f}s"
+                  + (f" tusimple_acc={val_metrics['tusimple_accuracy']:.4f} fp={val_metrics['tusimple_fp']:.4f} fn={val_metrics['tusimple_fn']:.4f}" if "tusimple_accuracy" in val_metrics else "")
                   + (f" gpu_peak={row['gpu_peak_allocated_mb']:.0f}MB" if "gpu_peak_allocated_mb" in row else "") + (" *" if improved else ""), flush=True)
             if stop:
                 print(stop_reason, flush=True)
@@ -297,7 +311,7 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
                                "best_val_metrics": best_metrics, "epochs_run": len(history), "stop_reason": stop_reason}
     if config.restore_best and best_path.exists():
         load_checkpoint(best_path, model, map_location=device)
-        _, restored = validate(model, val_loader, device, config, loss_fn)
+        _, restored = validate(model, val_loader, device, config, loss_fn, val_records)
         summary["restored_best_val_metrics"] = restored  # re-measured with the restored weights
     if production_path is not None and best_path.exists():
         # The best epoch's weights and metadata only (no optimizer or RNG state), whatever `model` currently holds.
