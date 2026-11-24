@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from backend.app.ai.models.unet import LaneSegmentationUNet
 from backend.training.dataset import LaneSegmentationDataset
-from backend.training.metrics import compute_metrics
+from backend.training.metrics import confusion_counts, metrics_from_counts
 from backend.training.transforms import build_inference_transform
 from backend.training.utils import load_checkpoint
 
@@ -25,16 +25,20 @@ def _resolve_device(device: str) -> torch.device:
 
 
 def evaluate(dataset_root: str, checkpoint_path: str, device_name: str = "auto", batch_size: int = 4) -> dict[str, float]:
+    """Pixel metrics of a checkpoint on one split folder (images/, masks/), over the whole split at threshold 0.5.
+
+    The input size is the one the checkpoint was trained at (its saved config), 320x160 for checkpoints without it."""
     device = _resolve_device(device_name)
     model = LaneSegmentationUNet(in_channels=3, num_classes=2).to(device)
-    load_checkpoint(checkpoint_path, model, map_location=device)
+    checkpoint = load_checkpoint(checkpoint_path, model, map_location=device)
+    input_size = tuple(checkpoint.get("config", {}).get("input_size") or (320, 160))
     model.eval()
 
     dataset = LaneSegmentationDataset(
         image_dir=str(Path(dataset_root) / "images"),
         mask_dir=str(Path(dataset_root) / "masks"),
-        input_size=(320, 160),
-        transform=build_inference_transform((320, 160)),
+        input_size=input_size,
+        transform=build_inference_transform(input_size),
     )
     dataloader = DataLoader(
         dataset,
@@ -45,18 +49,15 @@ def evaluate(dataset_root: str, checkpoint_path: str, device_name: str = "auto",
         persistent_workers=False,
     )
 
-    metrics_values = {"dice": [], "iou": [], "precision": [], "recall": [], "f1": []}
+    counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0, "tn": 0.0}
     with torch.no_grad():
         for images, masks in dataloader:
-            images = images.to(device)
-            masks = masks.to(device)
-            logits = model(images)
-            metrics = compute_metrics(logits, masks)
-            for key, value in metrics.items():
-                if key in metrics_values:
-                    metrics_values[key].append(value)
+            logits = model(images.to(device))
+            for key, value in confusion_counts(logits, masks.to(device)).items():
+                counts[key] += value
 
-    return {key: sum(values) / max(len(values), 1) for key, values in metrics_values.items()}
+    metrics = metrics_from_counts(counts)
+    return {key: metrics[key] for key in ("dice", "iou", "precision", "recall", "f1")}
 
 
 def parse_args() -> argparse.Namespace:

@@ -116,6 +116,11 @@ class ModelLoader:
                         compatible_state_dict[key] = value
                 state_dict = compatible_state_dict
 
+            # A checkpoint written by backend/training records the input size it was trained at; serve it at that size.
+            saved_config = state.get("config") if isinstance(state, dict) else None
+            saved_size = saved_config.get("input_size") if isinstance(saved_config, dict) else None
+            input_width, input_height = (int(saved_size[0]), int(saved_size[1])) if saved_size else (self.config.input_width, self.config.input_height)
+
             incompatible = model.load_state_dict(state_dict, strict=False)
             if incompatible.missing_keys:
                 raise AIModelError(f"Checkpoint is missing expected keys: {incompatible.missing_keys}")
@@ -127,8 +132,8 @@ class ModelLoader:
                 architecture=self.config.architecture,
                 device=str(device),
                 checkpoint_loaded=True,
-                input_width=self.config.input_width,
-                input_height=self.config.input_height,
+                input_width=input_width,
+                input_height=input_height,
                 threshold=self.config.mask_threshold,
                 parameter_count=sum(p.numel() for p in model.parameters()),
             )
@@ -149,7 +154,7 @@ class ModelLoader:
         if not self.config.warmup or not self.is_available:
             return
         try:
-            dummy = torch.zeros(1, 3, self.config.input_height, self.config.input_width, dtype=torch.float32, device=self._device or self._resolve_device())
+            dummy = torch.zeros(1, 3, self._metadata.input_height, self._metadata.input_width, dtype=torch.float32, device=self._device or self._resolve_device())
             with torch.inference_mode():
                 self.model(dummy)
         except Exception as exc:
@@ -217,5 +222,5 @@ class ModelLoader:
             "architecture": self.metadata.architecture,
             "device": self.metadata.device,
             "checkpoint_loaded": self.metadata.checkpoint_loaded,
-            "input_size": [self.config.input_width, self.config.input_height],
+            "input_size": [self.metadata.input_width, self.metadata.input_height],
         }

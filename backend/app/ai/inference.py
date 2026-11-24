@@ -21,9 +21,10 @@ class AIInferenceEngine:
         if frame is None:
             raise AIModelError("Input frame is required")
         model = self.loader.model
+        metadata = self.loader.metadata
         device = self.loader._device or torch.device("cpu")
         start = time.perf_counter()
-        tensor, original_size = self.preprocessor.prepare(frame, device)
+        tensor, original_size = self.preprocessor.prepare(frame, device, size=(metadata.input_width, metadata.input_height))
         with torch.inference_mode():
             output = model(tensor)
         inference_time_ms = (time.perf_counter() - start) * 1000.0

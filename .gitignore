@@ -33,6 +33,7 @@ processed/
 /dataset/
 /datasets/
 training_outputs/
+training_runs/
 backend/training/outputs/
 
 # TuSimple dataset contents (real data should not be committed)

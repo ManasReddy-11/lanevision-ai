@@ -1,20 +1,32 @@
+# Local defaults. Every TrainingConfig field (backend/training/config.py) can be set here or with --set KEY=VALUE.
 dataset:
   root: dataset
   image_extension: .png
   mask_extension: .png
 training:
+  experiment_name: local
   epochs: 30
   batch_size: 4
   learning_rate: 0.001
   weight_decay: 0.0001
-  patience: 5
-  min_delta: 0.001
-  input_size: [320, 160]
+  input_size: [320, 160]        # (width, height), multiples of 16; saved in checkpoints and used by inference
+  train_mask_dilation: 0        # thicken train targets only; val/test masks are unchanged
   num_workers: 0
-  seed: 42
-  device: auto
+  amp: false                    # mixed precision, CUDA only
+  scheduler: plateau            # plateau | cosine | step | none
+  warmup_epochs: 0
+  loss: bce_dice                # bce_dice | focal_dice | tversky | focal_tversky | bce
   bce_weight: 0.7
   dice_weight: 0.3
-  save_dir: backend/models
-  production_checkpoint_path: backend/models/lane_segmentation.pth
-  output_dir: training_outputs
+  monitor: dice                 # validation metric for model selection and early stopping
+  early_stopping: true
+  patience: 5
+  min_delta: 0.001
+  restore_best: true
+  evaluate_test: false          # test metrics are reported after selection only, never used to choose
+  seed: 42
+  deterministic: false
+  device: auto
+  save_dir: training_runs/local/models
+  output_dir: training_runs/local/outputs
+  production_checkpoint_path: null   # set a path to export the best model; an existing file is never overwritten

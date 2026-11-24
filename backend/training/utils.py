@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import random
 from pathlib import Path
@@ -10,12 +9,41 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, deterministic: bool = False) -> None:
+    """Seed Python, NumPy and PyTorch (CPU and CUDA). deterministic also selects deterministic cuDNN kernels."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def seed_worker(worker_id: int) -> None:
+    """DataLoader worker_init_fn: derive NumPy/random seeds from the worker's torch seed (set by the loader generator)."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def rng_state() -> dict[str, Any]:
+    state = {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: dict[str, Any] | None) -> None:
+    if not state:
+        return
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu() if hasattr(state["torch"], "cpu") else state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
 
 
 def save_checkpoint(
@@ -27,7 +55,10 @@ def save_checkpoint(
     scheduler: Any | None = None,
     best_metric: float | None = None,
     config: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
+    """Save weights and training state. Written to a temporary file first, so an interrupted save cannot leave a
+    truncated checkpoint in place of a good one."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -44,7 +75,11 @@ def save_checkpoint(
         payload["optimizer_state_dict"] = optimizer.state_dict()
     if scheduler is not None:
         payload["scheduler_state_dict"] = scheduler.state_dict()
-    torch.save(payload, str(path))
+    if extra:
+        payload.update(extra)
+    temporary = path.with_name(path.name + ".tmp")
+    torch.save(payload, str(temporary))
+    os.replace(temporary, path)
 
 
 def load_checkpoint(
@@ -54,7 +89,9 @@ def load_checkpoint(
     scheduler: Any | None = None,
     map_location: str | torch.device = "cpu",
 ) -> dict[str, Any]:
-    checkpoint = torch.load(str(path), map_location=map_location)
+    # weights_only=False: resume checkpoints written by this package also hold optimizer, scheduler and RNG state.
+    # Only load checkpoints you produced yourself.
+    checkpoint = torch.load(str(path), map_location=map_location, weights_only=False)
     state_dict = checkpoint.get("state_dict") or checkpoint.get("model_state_dict")
     if state_dict is None:
         raise KeyError("Checkpoint does not contain model weights")
