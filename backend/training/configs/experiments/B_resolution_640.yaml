@@ -1,0 +1,25 @@
+# Experiment B: A at 640x320 input (lanes twice as wide in pixels); everything else as A.
+training:
+  experiment_name: B_resolution_640
+  input_size: [640, 320]
+  train_mask_dilation: 0
+  loss: bce_dice
+  bce_weight: 0.7
+  dice_weight: 0.3
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: plateau
+  amp: false
+  monitor: tusimple_accuracy
+  early_stopping: true
+  patience: 6
+  min_delta: 0.002
+  restore_best: true
+  evaluate_test: false
+  preload: true
+  num_workers: 2
+  seed: 42
+  device: cuda
+  production_checkpoint_path: null

@@ -1,0 +1,27 @@
+# Experiment A: the baseline training configuration (320x160, BCE + Dice, plateau schedule, batch 4) with early stopping,
+# best-epoch restore, fixed seeds and selection on validation TuSimple accuracy. Reference for B-D; run with seeds 42 and 7
+# to measure seed-to-seed variation. Paths are set by the job: dataset_root, tusimple_val_labels, save_dir, output_dir.
+training:
+  experiment_name: A_baseline_320
+  input_size: [320, 160]
+  train_mask_dilation: 0
+  loss: bce_dice
+  bce_weight: 0.7
+  dice_weight: 0.3
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: plateau
+  amp: false
+  monitor: tusimple_accuracy
+  early_stopping: true
+  patience: 6
+  min_delta: 0.002
+  restore_best: true
+  evaluate_test: false
+  preload: true
+  num_workers: 2
+  seed: 42
+  device: cuda
+  production_checkpoint_path: null

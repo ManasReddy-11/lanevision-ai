@@ -1,0 +1,27 @@
+# Experiment D2: A with the Tversky loss (false positives 0.3, false negatives 0.7) instead of BCE + Dice.
+training:
+  experiment_name: D2_tversky
+  input_size: [320, 160]
+  train_mask_dilation: 0
+  loss: tversky
+  tversky_alpha: 0.3
+  tversky_beta: 0.7
+  bce_weight: 0.7
+  dice_weight: 0.3
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: plateau
+  amp: false
+  monitor: tusimple_accuracy
+  early_stopping: true
+  patience: 6
+  min_delta: 0.002
+  restore_best: true
+  evaluate_test: false
+  preload: true
+  num_workers: 2
+  seed: 42
+  device: cuda
+  production_checkpoint_path: null

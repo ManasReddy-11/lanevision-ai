@@ -253,3 +253,15 @@ def test_training_reports_and_can_select_on_validation_tusimple_accuracy(tmp_pat
     assert "tusimple_accuracy" in summary["restored_best_val_metrics"]
     with pytest.raises(ValueError, match="needs tusimple_val_labels"):
         TrainingConfig(monitor="tusimple_accuracy").validate()
+
+
+def test_experiment_configs_load_and_change_one_factor_each() -> None:
+    folder = Path(__file__).resolve().parents[1] / "training" / "configs" / "experiments"
+    configs = {path.stem: TrainingConfig.load(str(path)) for path in sorted(folder.glob("*.yaml"))}
+    reference = configs["A_baseline_320"].to_dict()
+    for name, config in configs.items():
+        config.tusimple_val_labels = ["labels.json"]  # supplied by the job with --set
+        config.validate()
+        changed = {key for key, value in config.to_dict().items() if value != reference[key]} - {"experiment_name", "tusimple_val_labels"}
+        assert changed <= {"input_size", "train_mask_dilation", "loss", "focal_gamma", "focal_alpha", "tversky_alpha", "tversky_beta"}, (name, changed)
+        assert config.production_checkpoint_path is None and config.evaluate_test is False and config.monitor == "tusimple_accuracy"

@@ -104,7 +104,7 @@ class TrainingConfig:
                     config.dataset_root = value
                 elif key in ("image_extension", "mask_extension", "train_mask_dilation"):
                     setattr(config, key, value)
-        return config.validate()
+        return config  # validated after command-line overrides (train() validates too)
 
     @classmethod
     def load(cls, path: str | None = None) -> "TrainingConfig":

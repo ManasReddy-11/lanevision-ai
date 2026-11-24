@@ -1,0 +1,25 @@
+# Experiment C1: A with training targets widened by 4 px each side at 1280x720 (about 1 px at 320x160); val and test masks unchanged.
+training:
+  experiment_name: C1_mask_dilation_4
+  input_size: [320, 160]
+  train_mask_dilation: 4
+  loss: bce_dice
+  bce_weight: 0.7
+  dice_weight: 0.3
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: plateau
+  amp: false
+  monitor: tusimple_accuracy
+  early_stopping: true
+  patience: 6
+  min_delta: 0.002
+  restore_best: true
+  evaluate_test: false
+  preload: true
+  num_workers: 2
+  seed: 42
+  device: cuda
+  production_checkpoint_path: null
