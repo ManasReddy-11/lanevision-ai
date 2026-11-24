@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.services.history_service import HistoryService
 
 
@@ -104,9 +106,11 @@ def test_analytics_and_activity_timeline(tmp_path):
     assert analytics["advanced_detections"] == 2
     assert analytics["successful_detections"] == 2
     assert analytics["failed_detections"] == 1
-    assert analytics["average_confidence"] == 0.6
-    assert analytics["average_processing_time_ms"] == 116.66666666666667
-    assert analytics["average_processing_fps"] == 24.0
-    assert analytics["average_detection_success_rate"] == 0.95
+    # Averages of floats: the rows come back in no particular order and float addition is not associative
+    # (0.8 + 0.9 + 0.1 != 0.1 + 0.8 + 0.9 in binary floating point), so compare with a tight relative tolerance.
+    assert analytics["average_confidence"] == pytest.approx(0.6, rel=1e-12)
+    assert analytics["average_processing_time_ms"] == pytest.approx(350.0 / 3.0, rel=1e-12)
+    assert analytics["average_processing_fps"] == pytest.approx(24.0, rel=1e-12)
+    assert analytics["average_detection_success_rate"] == pytest.approx(0.95, rel=1e-12)
     assert analytics["activity_timeline"][0]["count"] >= 1
     assert len(analytics["recent_detections"]) == 3
