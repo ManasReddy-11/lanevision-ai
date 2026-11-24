@@ -31,6 +31,12 @@ class VideoDetectionMetrics(BaseModel):
     # it could be determined; None when no frame had a reliable ego lane.
     average_vehicle_offset_pixels: Optional[float] = None
     vehicle_offset_available_rate: Optional[float] = None
+    # Mean absolute change of the offset between consecutive frames that both have one (a measure of jitter, pixels).
+    vehicle_offset_jitter_pixels: Optional[float] = None
+    # Experimental lane departure warning (offset beyond a fraction of the lane width for a sustained time; uncalibrated
+    # camera, image pixels; not a safety function).
+    lane_departure_warning_frames: Optional[int] = None
+    lane_departure_events: Optional[int] = None
 
 
 class VideoDetectionResponse(BaseModel):

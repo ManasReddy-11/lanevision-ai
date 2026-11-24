@@ -12,6 +12,7 @@ from .config import AIConfig
 from .exceptions import AIModelError, AIUnavailableError
 from .inference import AIInferenceEngine
 from .lane_geometry import EgoLane, LaneCurve, LaneGeometryConfig, extract_lanes, select_ego_lane
+from .lane_tracking import LaneTracker
 from .overlay import OverlayRenderer
 from .postprocessing import MaskPostprocessor
 
@@ -78,7 +79,10 @@ class AILaneDetectorAdapter:
             detail += ". Set AI_MODEL_PATH to a trained checkpoint file (see backend/app/ai/README.md)."
         return detail
 
-    def detect(self, frame: np.ndarray, debug: bool = False) -> LaneDetectionResult:
+    def detect(self, frame: np.ndarray, debug: bool = False, tracker: LaneTracker | None = None) -> LaneDetectionResult:
+        """Detect lanes in one frame. In a video, pass the video's LaneTracker: lanes then keep their identity across
+        frames, are smoothed, survive short gaps, and the ego lane is chosen from the tracked lanes. The adapter is
+        shared between requests and keeps no per-video state itself."""
         started_at = time.perf_counter()
         if frame is None:
             raise AIModelError("Input frame is required")
@@ -90,11 +94,32 @@ class AILaneDetectorAdapter:
             inference_result = self.engine.run(frame)
             probability = cv2.resize(inference_result["probability_mask"], (width, height), interpolation=cv2.INTER_LINEAR)
             mask = self.postprocessor.process(inference_result["mask"], (height, width))
-            lanes = extract_lanes(probability, self.geometry)
-            ego = select_ego_lane(lanes, width, height, self.geometry)
+            detected = extract_lanes(probability, self.geometry)
+            tracking = None
+            if tracker is None:
+                lanes = detected
+                held: set[int] = set()
+                ego = select_ego_lane(lanes, width, height, self.geometry)
+            else:
+                tracked, events = tracker.update(detected, width, height)
+                lanes = [lane.curve for lane in tracked]
+                held = {id(lane.curve) for lane in tracked if lane.held}
+                ego = select_ego_lane(lanes, width, height, self.geometry)
+                ego_ids = tracker.note_ego(tracked, ego, events)
+                tracking = {
+                    "lanes": [{"id": lane.track_id, "held_frames": lane.missed, "detections": lane.hits} for lane in tracked],
+                    "detected_lanes": len(detected),
+                    "ego_lane_ids": ego_ids,
+                    "appeared": events.appeared,
+                    "disappeared": events.disappeared,
+                    "ego_lane_change": events.ego_lane_change,
+                    "ego_boundary_held": any(id(boundary) in held for boundary in (ego.left, ego.right) if boundary is not None),
+                }
             polygon = _ego_polygon(ego)
-            overlay = self.overlay_renderer.render(frame, mask, lanes=lanes, ego=ego, polygon=polygon)
+            overlay = self.overlay_renderer.render(frame, mask, lanes=lanes, ego=ego, polygon=polygon, held=held)
             warnings = [] if ego.reliable else [f"Vehicle offset unavailable: {ego.reason}"]
+            if tracking is not None and ego.reliable and tracking["ego_boundary_held"]:
+                warnings.append("Ego-lane boundary held from previous frames (not detected in this frame)")
             left_confidence = ego.left.confidence(height, self.geometry.top_ratio) if ego.left else 0.0
             right_confidence = ego.right.confidence(height, self.geometry.top_ratio) if ego.right else 0.0
             return LaneDetectionResult(
@@ -112,7 +137,8 @@ class AILaneDetectorAdapter:
                 detected_segment_count=len(lanes),
                 lane_width_bottom_pixels=ego.lane_width if ego.reliable else None,
                 warnings=warnings,
-                debug_output={"mask": mask, "probability": probability, "lanes": lanes, "ego_lane": ego, "model_metadata": inference_result["model_metadata"]},
+                debug_output={"mask": mask, "probability": probability, "lanes": lanes, "ego_lane": ego, "tracking": tracking,
+                              "model_metadata": inference_result["model_metadata"]},
             )
         except AIUnavailableError as exc:
             status_payload = self.model_status()

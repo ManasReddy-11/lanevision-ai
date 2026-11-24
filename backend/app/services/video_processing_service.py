@@ -16,7 +16,7 @@ from ..ai.exceptions import AIModelError
 from ..core.config import get_settings
 from ..core.logging import get_logger
 from ..cv.detectors import get_detector
-from ..cv.temporal.smoother import TemporalLaneSmoother
+from ..ai.lane_tracking import LaneDepartureMonitor, LaneTracker
 from ..schemas.video_detection import (
     VideoDetectionMetrics,
     VideoDetectionResponse,
@@ -173,15 +173,22 @@ class VideoProcessingService:
             if writer is None:
                 raise VideoValidationError(500, "Unable to initialize video writer")
 
-            smoother = TemporalLaneSmoother(alpha=float(settings.temporal_smoothing_alpha), max_missing_frames=settings.max_missing_lane_frames)
+            # Per-video temporal state, created here so nothing carries over from another video: the AI lane tracker
+            # (identities, smoothing, short gaps) and the experimental departure monitor (all algorithms).
+            tracker = LaneTracker() if algorithm == "ai" else None
+            departure_monitor = LaneDepartureMonitor(float(fps))
             frames_read = 0
             frames_processed = 0
             frames_written = 0
             successful_detection_frames = 0
-            left_lane_detection_frames = 0
-            right_lane_detection_frames = 0
             both_lanes_detection_frames = 0
+            departure_warning_frames = 0
+            held_ego_boundary_frames = 0
+            ego_lane_changes = 0
+            lane_ids: set[int] = set()
             offset_values: list[float] = []
+            offset_jumps: list[float] = []
+            previous_offset: float | None = None
             processing_times: list[float] = []
             confidences: list[float] = []
             warning_counts: Counter[str] = Counter()
@@ -193,37 +200,34 @@ class VideoProcessingService:
                     break
                 frames_read += 1
                 frame_started_at = time.perf_counter()
-                detection = detector.detect(frame)
+                detection = detector.detect(frame, tracker=tracker) if tracker is not None else detector.detect(frame)
                 processing_times.append((time.perf_counter() - frame_started_at) * 1000.0)
                 confidences.append(float(detection.confidence))
                 warning_counts.update(detection.warnings or [])
+                tracking = (detection.debug_output or {}).get("tracking") if tracker is not None else None
 
-                left_lane = None
-                right_lane = None
-                if detection.left_lane is not None:
-                    left_lane = (float(detection.left_lane.x1), float(detection.left_lane.y1), float(detection.left_lane.x2), float(detection.left_lane.y2))
-                if detection.right_lane is not None:
-                    right_lane = (float(detection.right_lane.x1), float(detection.right_lane.y1), float(detection.right_lane.x2), float(detection.right_lane.y2))
-
-                smoothed_state = smoother.update(left_lane, right_lane)
-                if smoothed_state.left is not None:
-                    left_lane = smoothed_state.left
-                if smoothed_state.right is not None:
-                    right_lane = smoothed_state.right
-
+                # Rates count what this frame reports (for AI, tracked ego boundaries, which may be held for a few
+                # frames; held_ego_boundary_frames says how often).
                 if detection.left_lane is not None or detection.right_lane is not None:
                     successful_detection_frames += 1
-                if left_lane is not None:
-                    left_lane_detection_frames += 1
-                if right_lane is not None:
-                    right_lane_detection_frames += 1
-                if left_lane is not None and right_lane is not None:
+                if detection.left_lane is not None and detection.right_lane is not None:
                     both_lanes_detection_frames += 1
+                if tracking is not None:
+                    lane_ids.update(lane["id"] for lane in tracking["lanes"])
+                    held_ego_boundary_frames += bool(tracking["ego_boundary_held"])
+                    ego_lane_changes += tracking["ego_lane_change"] is not None
 
                 # The vehicle offset relative to the ego-lane centre, only for frames where the detector could
                 # determine it (lane_center_x is a position in the frame, not an offset).
-                if detection.vehicle_offset_pixels is not None:
-                    offset_values.append(float(detection.vehicle_offset_pixels))
+                offset = detection.vehicle_offset_pixels
+                if offset is not None:
+                    offset_values.append(float(offset))
+                    if previous_offset is not None:
+                        offset_jumps.append(abs(float(offset) - previous_offset))
+                previous_offset = float(offset) if offset is not None else None
+                departure = departure_monitor.update(detection.vehicle_offset_normalized, offset is not None,
+                                                     tuple(tracking["ego_lane_ids"]) if tracking is not None else None)
+                departure_warning_frames += departure.status == "warning"
 
                 overlay_frame = detection.processed_frame.copy()
                 if not self._validate_processed_frame(overlay_frame, width, height):
@@ -235,6 +239,8 @@ class VideoProcessingService:
                 offset_text = f"{detection.vehicle_offset_pixels:+.1f}px" if detection.vehicle_offset_pixels is not None else "n/a"
                 cv2.putText(overlay_frame, f"Offset: {offset_text}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 cv2.putText(overlay_frame, f"FPS: {float(fps):.1f}", (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                if departure.status == "warning":
+                    cv2.putText(overlay_frame, f"Lane departure {departure.side} (experimental)", (20, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 writer.write(overlay_frame)
                 frames_processed += 1
                 frames_written += 1
@@ -267,6 +273,7 @@ class VideoProcessingService:
             both_lane_detection_rate = float(both_lanes_detection_frames / frames_processed) if frames_processed else 0.0
             average_vehicle_offset_pixels = float(sum(offset_values) / len(offset_values)) if offset_values else None
             vehicle_offset_available_rate = float(len(offset_values) / frames_processed) if frames_processed else 0.0
+            offset_jitter_pixels = float(sum(offset_jumps) / len(offset_jumps)) if offset_jumps else None
             warnings = [f"{message} ({count}/{frames_processed} frames)" for message, count in warning_counts.most_common()]
 
             total_request_time_ms = (time.perf_counter() - started_at) * 1000.0
@@ -294,6 +301,11 @@ class VideoProcessingService:
                     "average_inference_time_ms": float(sum(processing_times) / len(processing_times)),
                     "average_confidence": average_confidence,
                     "frames_with_vehicle_offset": len(offset_values),
+                    "tracking": {
+                        "distinct_lanes": len(lane_ids),
+                        "frames_with_held_ego_boundary": held_ego_boundary_frames,
+                        "ego_lane_changes": ego_lane_changes,
+                    },
                 }
 
             response = VideoDetectionResponse(
@@ -317,6 +329,9 @@ class VideoProcessingService:
                     average_processing_time_ms=average_processing_time_ms,
                     average_vehicle_offset_pixels=average_vehicle_offset_pixels,
                     vehicle_offset_available_rate=vehicle_offset_available_rate,
+                    vehicle_offset_jitter_pixels=offset_jitter_pixels,
+                    lane_departure_warning_frames=departure_warning_frames,
+                    lane_departure_events=departure_monitor.events,
                     average_confidence=average_confidence,
                     detection_success_rate=detection_success_rate,
                     both_lane_detection_rate=both_lane_detection_rate,
