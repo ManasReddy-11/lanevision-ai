@@ -99,29 +99,15 @@ class DetectionService:
         original_height, original_width = frame.shape[:2]
         ai_metadata = None
         if algorithm == "ai":
-            debug_output = getattr(result, "debug_output", None) or {}
-            model_metadata = debug_output.get("model_metadata")
-            if model_metadata is not None:
-                if isinstance(model_metadata, dict):
-                    ai_metadata = {
-                        "model_name": model_metadata.get("model_name"),
-                        "architecture": model_metadata.get("architecture"),
-                        "device": model_metadata.get("device"),
-                        "checkpoint_loaded": model_metadata.get("checkpoint_loaded"),
-                        "input_size": model_metadata.get("input_size"),
-                        "inference_time_ms": float(result.processing_time_ms),
-                        "confidence": float(result.confidence),
-                    }
-                else:
-                    ai_metadata = {
-                        "model_name": getattr(model_metadata, "model_name", None),
-                        "architecture": getattr(model_metadata, "architecture", None),
-                        "device": getattr(model_metadata, "device", None),
-                        "checkpoint_loaded": getattr(model_metadata, "checkpoint_loaded", None),
-                        "input_size": [getattr(model_metadata, "input_width", None), getattr(model_metadata, "input_height", None)],
-                        "inference_time_ms": float(result.processing_time_ms),
-                        "confidence": float(result.confidence),
-                    }
+            # Same source as the video endpoint: the status of the model that actually served this request.
+            model_status = detector.model_status() if hasattr(detector, "model_status") else {}
+            ai_metadata = {
+                **model_status,
+                "inference_time_ms": float(result.processing_time_ms),
+                "confidence": float(result.confidence),
+                "lanes_detected": int(result.detected_segment_count),
+                "vehicle_offset_available": result.vehicle_offset_pixels is not None,
+            }
 
         response = DetectionResponse(
             id=str(uuid.uuid4()),

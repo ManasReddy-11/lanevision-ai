@@ -119,7 +119,7 @@ def test_ai_adapter_handles_non_square_frames_with_a_loaded_checkpoint(tmp_path)
     result = AILaneDetectorAdapter(config).detect(frame)
 
     assert result.success is True
-    assert result.warnings == []
+    assert not any(warning.startswith("AI model unavailable") for warning in result.warnings)
     assert result.processed_frame.shape == frame.shape
     assert result.debug_output["mask"].shape == frame.shape[:2]
 

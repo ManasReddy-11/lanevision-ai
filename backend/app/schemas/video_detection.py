@@ -27,7 +27,10 @@ class VideoDetectionMetrics(BaseModel):
     average_confidence: Optional[float] = None
     detection_success_rate: Optional[float] = None
     both_lane_detection_rate: Optional[float] = None
+    # Mean of the per-frame offset from the ego-lane centre (positive: vehicle right of centre), over the frames where
+    # it could be determined; None when no frame had a reliable ego lane.
     average_vehicle_offset_pixels: Optional[float] = None
+    vehicle_offset_available_rate: Optional[float] = None
 
 
 class VideoDetectionResponse(BaseModel):

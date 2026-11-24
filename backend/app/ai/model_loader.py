@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ class ModelLoader:
         self._load_error: str | None = None
         self._load_started_at: float | None = None
         self._load_count = 0
+        self._lock = threading.Lock()
+        self._failure: AIModelError | None = None
 
     @property
     def model(self) -> torch.nn.Module:
@@ -50,6 +53,11 @@ class ModelLoader:
         return self._metadata
 
     @property
+    def load_count(self) -> int:
+        """How many times the checkpoint file has been read (at most once per loader)."""
+        return self._load_count
+
+    @property
     def is_available(self) -> bool:
         if not self.config.enabled:
             return False
@@ -60,8 +68,23 @@ class ModelLoader:
         return self._model is not None and self._metadata is not None
 
     def load(self) -> ModelMetadata:
+        """Load the checkpoint once. Thread-safe; a failed load is remembered and reported again instead of retried,
+        so a missing or broken checkpoint costs nothing per frame and every caller sees the same clear error."""
         if self._metadata is not None and self._model is not None:
             return self._metadata
+        with self._lock:
+            if self._metadata is not None and self._model is not None:
+                return self._metadata
+            if self._failure is not None:
+                raise type(self._failure)(str(self._failure))
+            try:
+                return self._load_locked()
+            except AIModelError as exc:
+                self._failure = exc
+                self._load_error = str(exc)
+                raise
+
+    def _load_locked(self) -> ModelMetadata:
         if not self.config.enabled:
             raise AIUnavailableError("AI mode is disabled")
         if not self.config.model_path:

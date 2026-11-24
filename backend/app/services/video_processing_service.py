@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -29,7 +30,7 @@ settings = get_settings()
 
 
 class VideoProcessingService:
-    """Process uploaded videos frame-by-frame with the classical detector and temporal smoothing."""
+    """Process uploaded videos frame by frame with the requested detector and temporal smoothing."""
 
     def __init__(self) -> None:
         self.detector = get_detector("classic")
@@ -160,6 +161,9 @@ class VideoProcessingService:
             if writer is None:
                 raise VideoValidationError(500, "Unable to initialize video writer")
 
+            # One detector for the whole video: the AI detector is shared per process (its model is loaded once), and
+            # classic/advanced detectors keep their per-stream state across frames.
+            detector = get_detector(algorithm)
             smoother = TemporalLaneSmoother(alpha=float(settings.temporal_smoothing_alpha), max_missing_frames=settings.max_missing_lane_frames)
             frames_read = 0
             frames_processed = 0
@@ -171,7 +175,7 @@ class VideoProcessingService:
             offset_values: list[float] = []
             processing_times: list[float] = []
             confidences: list[float] = []
-            warnings: list[str] = []
+            warning_counts: Counter[str] = Counter()
 
             processing_started_at = time.perf_counter()
             while True:
@@ -180,10 +184,10 @@ class VideoProcessingService:
                     break
                 frames_read += 1
                 started_at = time.perf_counter()
-                detector = get_detector(algorithm)
                 detection = detector.detect(frame)
                 processing_times.append((time.perf_counter() - started_at) * 1000.0)
                 confidences.append(float(detection.confidence))
+                warning_counts.update(detection.warnings or [])
 
                 left_lane = None
                 right_lane = None
@@ -207,8 +211,10 @@ class VideoProcessingService:
                 if left_lane is not None and right_lane is not None:
                     both_lanes_detection_frames += 1
 
-                if detection.lane_center_x is not None:
-                    offset_values.append(float(detection.lane_center_x))
+                # The vehicle offset relative to the ego-lane centre, only for frames where the detector could
+                # determine it (lane_center_x is a position in the frame, not an offset).
+                if detection.vehicle_offset_pixels is not None:
+                    offset_values.append(float(detection.vehicle_offset_pixels))
 
                 overlay_frame = detection.processed_frame.copy()
                 if not self._validate_processed_frame(overlay_frame, width, height):
@@ -217,7 +223,8 @@ class VideoProcessingService:
                 cv2.putText(overlay_frame, "LaneVision AI", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.putText(overlay_frame, f"Algorithm: {algorithm.title()}", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 cv2.putText(overlay_frame, f"Confidence: {detection.confidence:.2f}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                cv2.putText(overlay_frame, f"Offset: {detection.vehicle_offset_pixels or 0:.1f}px", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                offset_text = f"{detection.vehicle_offset_pixels:+.1f}px" if detection.vehicle_offset_pixels is not None else "n/a"
+                cv2.putText(overlay_frame, f"Offset: {offset_text}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 cv2.putText(overlay_frame, f"FPS: {float(fps):.1f}", (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 writer.write(overlay_frame)
                 frames_processed += 1
@@ -250,6 +257,8 @@ class VideoProcessingService:
             detection_success_rate = float(successful_detection_frames / frames_processed) if frames_processed else 0.0
             both_lane_detection_rate = float(both_lanes_detection_frames / frames_processed) if frames_processed else 0.0
             average_vehicle_offset_pixels = float(sum(offset_values) / len(offset_values)) if offset_values else None
+            vehicle_offset_available_rate = float(len(offset_values) / frames_processed) if frames_processed else 0.0
+            warnings = [f"{message} ({count}/{frames_processed} frames)" for message, count in warning_counts.most_common()]
 
             total_request_time_ms = (time.perf_counter() - started_at) * 1000.0
             logger.info(
@@ -269,14 +278,13 @@ class VideoProcessingService:
 
             ai_metadata = None
             if algorithm == "ai" and processing_times:
+                model_status = detector.model_status() if hasattr(detector, "model_status") else {}
                 ai_metadata = {
-                    "model_name": "lane-segmentation-unet",
-                    "architecture": "u-net",
-                    "device": "cpu",
-                    "checkpoint_loaded": False,
+                    **model_status,
                     "frames_processed": frames_processed,
                     "average_inference_time_ms": float(sum(processing_times) / len(processing_times)),
                     "average_confidence": average_confidence,
+                    "frames_with_vehicle_offset": len(offset_values),
                 }
 
             response = VideoDetectionResponse(
@@ -299,6 +307,7 @@ class VideoProcessingService:
                     average_processing_fps=average_processing_fps,
                     average_processing_time_ms=average_processing_time_ms,
                     average_vehicle_offset_pixels=average_vehicle_offset_pixels,
+                    vehicle_offset_available_rate=vehicle_offset_available_rate,
                     average_confidence=average_confidence,
                     detection_success_rate=detection_success_rate,
                     both_lane_detection_rate=both_lane_detection_rate,
