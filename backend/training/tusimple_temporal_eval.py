@@ -68,21 +68,34 @@ def cache(args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
     for position, (record, label_path) in enumerate(records):
         frames = _clip_frames(_resolve_image_path(source_root, record["raw_file"], annotation_path=label_path, cache=child_cache))
-        images = [cv2.imread(str(path), cv2.IMREAD_COLOR) for path in frames]
-        height, width = images[-1].shape[:2]
-        batch = torch.cat([engine.preprocessor.prepare(image, device)[0] for image in images])
-        with torch.inference_mode():
-            output = model(batch)
-        logits = output["out"] if isinstance(output, dict) and "out" in output else output
-        probabilities = torch.sigmoid(logits[:, engine.config.lane_class_id]).cpu().numpy().astype(np.float16)
         name = _sample_name(record["raw_file"]).rsplit(".", 1)[0] + ".npy"
-        np.save(out_dir / name, probabilities)
+        if args.skip_existing and _cached(out_dir / name, len(frames)):
+            height, width = cv2.imread(str(frames[-1]), cv2.IMREAD_COLOR).shape[:2]  # an interrupted run is resumed
+        else:
+            images = [cv2.imread(str(path), cv2.IMREAD_COLOR) for path in frames]
+            height, width = images[-1].shape[:2]
+            batch = torch.cat([engine.preprocessor.prepare(image, device)[0] for image in images])
+            with torch.inference_mode():
+                output = model(batch)
+            logits = output["out"] if isinstance(output, dict) and "out" in output else output
+            probabilities = torch.sigmoid(logits[:, engine.config.lane_class_id]).cpu().numpy().astype(np.float16)
+            temporary = out_dir / (name + ".tmp")
+            with temporary.open("wb") as handle:
+                np.save(handle, probabilities)
+            temporary.replace(out_dir / name)
         index.append({"raw_file": record["raw_file"], "lanes": record["lanes"], "h_samples": record["h_samples"], "width": width,
                       "height": height, "frames": len(frames), "probabilities": name})
         if args.progress and (position + 1) % args.progress == 0:
             print(f"{position + 1}/{len(records)} clips, {time.perf_counter() - started:.0f} s", flush=True)
     (out_dir / "index.json").write_text(json.dumps({"checkpoint": Path(args.checkpoint).name, "clips": index}), encoding="utf-8")
     return {"clips": len(index), "seconds": round(time.perf_counter() - started, 1)}
+
+
+def _cached(path: Path, frames: int) -> bool:
+    try:
+        return np.load(path, mmap_mode="r").shape[0] == frames
+    except (OSError, ValueError):
+        return False
 
 
 def _detections(cache_dir: Path, geometry: LaneGeometryConfig) -> list[dict[str, Any]]:
@@ -296,6 +309,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cache_parser.add_argument("--device", default="cpu")
     cache_parser.add_argument("--limit", type=int, default=0)
     cache_parser.add_argument("--progress", type=int, default=50)
+    cache_parser.add_argument("--skip-existing", action="store_true", help="reuse clips already cached by an interrupted run")
     evaluate_parser = commands.add_parser("evaluate", help="compare tracker variants on cached clips")
     evaluate_parser.add_argument("--cache", required=True)
     evaluate_parser.add_argument("--out", required=True)
