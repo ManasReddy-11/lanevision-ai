@@ -9,6 +9,7 @@ from app.cv.advanced.polynomial import PolynomialLane, fit_polynomial_lane, vali
 from app.cv.advanced.sliding_windows import sliding_window_search
 from app.cv.advanced.thresholding import apply_sobel, create_lane_binary
 from app.cv.advanced.temporal import AdvancedTemporalState
+from app.cv.metrics.lane_metrics import calculate_vehicle_offset
 
 
 def test_binary_threshold_output_is_binary_and_shape_preserved():
@@ -71,8 +72,9 @@ def test_lane_width_and_center_convention():
     right_x = 140.0
     widths = calculate_lane_widths(left_x, right_x, height)
     assert widths["width_bottom_pixels"] > 0
-    center = calculate_lane_center(left_x, right_x, frame_center_x=width / 2.0)
-    assert center == 0.0
+    center = calculate_lane_center(left_x, right_x)
+    assert center == 100.0  # a position in the frame, not an offset
+    assert calculate_vehicle_offset(width / 2.0, center) == 0.0
 
 
 def test_curvature_is_finite():

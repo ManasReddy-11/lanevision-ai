@@ -2,14 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-
-def calculate_lane_center(left_x: float | None, right_x: float | None, frame_center_x: float | None = None) -> float | None:
-    if left_x is None or right_x is None:
-        return None
-    if frame_center_x is None:
-        frame_center_x = 0.0
-    lane_center_x = (left_x + right_x) / 2.0
-    return lane_center_x - frame_center_x
+# The lane centre is a position (pixels from the left edge); the vehicle offset is lane_metrics.calculate_vehicle_offset.
+from ..metrics.lane_metrics import calculate_lane_center  # noqa: F401
 
 
 def calculate_lane_widths(left_x: float | None, right_x: float | None, height: int) -> dict[str, float]:

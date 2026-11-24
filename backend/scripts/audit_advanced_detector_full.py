@@ -93,8 +93,8 @@ if right_lane_poly is not None and validate_polynomial_lane(right_lane_poly, wid
     metrics['right_curvature'] = calculate_polynomial_curvature(right_lane_poly.coefficients)
 if 'left_bottom_x' in metrics and 'right_bottom_x' in metrics:
     metrics['lane_width'] = abs(metrics['right_bottom_x'] - metrics['left_bottom_x'])
-    metrics['lane_center'] = calculate_lane_center(metrics['left_bottom_x'], metrics['right_bottom_x'], frame_center_x=width / 2.0)
-    metrics['vehicle_offset'] = metrics['lane_center']
+    metrics['lane_center'] = calculate_lane_center(metrics['left_bottom_x'], metrics['right_bottom_x'])
+    metrics['vehicle_offset'] = width / 2.0 - metrics['lane_center']  # positive: vehicle right of the lane centre (warped coordinates)
     metrics['average_curvature'] = float(np.nanmean([metrics['left_curvature'], metrics['right_curvature']]))
 metrics['left_lane_pixel_count'] = len(left_x)
 metrics['right_lane_pixel_count'] = len(right_x)
