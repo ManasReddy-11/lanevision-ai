@@ -23,7 +23,7 @@ A real trained checkpoint is required for lane segmentation inference. Point the
 AI_MODEL_PATH=/path/to/lane_segmentation.pth   # AI_DEVICE=auto|cpu|cuda (default auto)
 ```
 
-Without a checkpoint, AI requests still return HTTP 200, but with the warning `AI model unavailable: ...`, an unmodified frame, `ai_metadata.checkpoint_loaded = false` and `ai_metadata.error`; the classic detector is never substituted. A missing or broken checkpoint is detected once per process and reported on every request.
+Without a usable checkpoint, image and video requests with `algorithm=ai` fail with HTTP 503 and a `detail` such as `AI model unavailable: AI model weights were not found (lane_segmentation.pth). Set AI_MODEL_PATH to a trained checkpoint file ...` (a broken file gives `AI model unavailable: Unable to load AI checkpoint: ...`). Nothing is stored, no frame is processed, the failure is recorded in the history, and the classic detector is never substituted. A missing or broken checkpoint is detected once per process and reported on every request. (Called directly, `AILaneDetectorAdapter.detect` still returns the unmodified frame with the warning `AI model unavailable: ...`.)
 
 Expected format:
 - PyTorch state dict or checkpoint dictionary containing a model state dict

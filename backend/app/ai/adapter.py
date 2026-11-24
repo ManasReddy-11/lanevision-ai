@@ -61,6 +61,23 @@ class AILaneDetectorAdapter:
             info["error"] = status["error"]
         return info
 
+    def require_model(self) -> None:
+        """Load the model now (once per process) or raise AIUnavailableError / AIModelError saying why it cannot be.
+
+        The API calls this before processing so a request for AI inference without a usable checkpoint fails with an
+        explicit error instead of returning unprocessed frames."""
+        self.engine.loader.load()
+
+    def unavailable_detail(self, exc: Exception) -> str:
+        """User-facing explanation of why the model cannot serve requests (file name only, never the full path)."""
+        detail = f"AI model unavailable: {exc}"
+        model_path = self.config.model_path
+        if self.config.enabled and (not model_path or not Path(model_path).is_file()):
+            if model_path:
+                detail += f" ({Path(model_path).name})"
+            detail += ". Set AI_MODEL_PATH to a trained checkpoint file (see backend/app/ai/README.md)."
+        return detail
+
     def detect(self, frame: np.ndarray, debug: bool = False) -> LaneDetectionResult:
         started_at = time.perf_counter()
         if frame is None:

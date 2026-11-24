@@ -38,7 +38,8 @@ def test_ai_detector_returns_warning_when_model_is_unavailable() -> None:
     assert any("AI model" in warning for warning in result.warnings)
 
 
-def test_detection_api_accepts_ai_algorithm() -> None:
+def test_detection_api_refuses_ai_when_no_checkpoint_is_configured() -> None:
+    # Without AI_MODEL_PATH the request fails explicitly instead of returning the unprocessed image as a "success".
     image = np.zeros((120, 160, 3), dtype=np.uint8)
     success, encoded = cv2.imencode(".png", image)
     assert success
@@ -49,12 +50,11 @@ def test_detection_api_accepts_ai_algorithm() -> None:
         data={"algorithm": "ai"},
     )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["algorithm"] == "ai"
-    assert data["warnings"]
-    assert data["ai_metadata"] is not None
-    assert data["ai_metadata"]["model_name"]
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "AI model unavailable: AI model weights are not configured. "
+        "Set AI_MODEL_PATH to a trained checkpoint file (see backend/app/ai/README.md)."
+    )
 
 
 def test_preprocessor_returns_tensor_with_batch_dimension() -> None:

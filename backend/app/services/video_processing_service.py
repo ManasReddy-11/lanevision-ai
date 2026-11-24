@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from fastapi import UploadFile
 
+from ..ai.exceptions import AIModelError
 from ..core.config import get_settings
 from ..core.logging import get_logger
 from ..cv.detectors import get_detector
@@ -120,6 +121,7 @@ class VideoProcessingService:
 
         temp_output_path: Path | None = None
         final_output_path: Path | None = None
+        original_path: Path | None = None
         writer: cv2.VideoWriter | None = None
         capture: cv2.VideoCapture | None = None
         started_at = time.perf_counter()
@@ -135,6 +137,16 @@ class VideoProcessingService:
             validated = validate_video_upload(file, temp_path, size_bytes)
             if size_bytes > settings.max_video_upload_size_mb * 1024 * 1024:
                 raise VideoValidationError(413, "File too large")
+
+            # One detector for the whole video: the AI detector is shared per process (its model is loaded once), and
+            # classic/advanced detectors keep their per-stream state across frames. AI inference without a usable
+            # checkpoint is refused before any frame is read, instead of returning unprocessed frames.
+            detector = get_detector(algorithm)
+            if algorithm == "ai":
+                try:
+                    detector.require_model()
+                except AIModelError as exc:
+                    raise VideoValidationError(503, detector.unavailable_detail(exc)) from exc
 
             safe_name = f"{uuid.uuid4()}{validated['extension']}"
             original_path = upload_dir / safe_name
@@ -161,9 +173,6 @@ class VideoProcessingService:
             if writer is None:
                 raise VideoValidationError(500, "Unable to initialize video writer")
 
-            # One detector for the whole video: the AI detector is shared per process (its model is loaded once), and
-            # classic/advanced detectors keep their per-stream state across frames.
-            detector = get_detector(algorithm)
             smoother = TemporalLaneSmoother(alpha=float(settings.temporal_smoothing_alpha), max_missing_frames=settings.max_missing_lane_frames)
             frames_read = 0
             frames_processed = 0
@@ -183,9 +192,9 @@ class VideoProcessingService:
                 if not success:
                     break
                 frames_read += 1
-                started_at = time.perf_counter()
+                frame_started_at = time.perf_counter()
                 detection = detector.detect(frame)
-                processing_times.append((time.perf_counter() - started_at) * 1000.0)
+                processing_times.append((time.perf_counter() - frame_started_at) * 1000.0)
                 confidences.append(float(detection.confidence))
                 warning_counts.update(detection.warnings or [])
 
@@ -338,13 +347,16 @@ class VideoProcessingService:
                 capture.release()
             self._cleanup_artifact(temp_output_path)
             self._cleanup_artifact(final_output_path)
+            if exc.status_code < 500:
+                self._cleanup_artifact(original_path)  # a rejected upload (invalid or unreadable video) is not kept
+                original_path = None
             self.history_service.record_detection(
                 kind="video",
                 algorithm=algorithm,
                 status="failed",
                 filename=file.filename or "video",
-                original_url=f"/media/uploads/{uuid.uuid4()}{Path(file.filename or 'video').suffix}",
-                result_url="/media/processed/failed.mp4",
+                original_url=f"/media/uploads/{original_path.name}" if original_path is not None else "",
+                result_url="",
                 metrics={"confidence": 0.0, "processing_time_ms": 0.0},
                 warnings=[exc.detail],
             )
@@ -362,8 +374,8 @@ class VideoProcessingService:
                 algorithm=algorithm,
                 status="failed",
                 filename=file.filename or "video",
-                original_url=f"/media/uploads/{uuid.uuid4()}{Path(file.filename or 'video').suffix}",
-                result_url="/media/processed/failed.mp4",
+                original_url=f"/media/uploads/{original_path.name}" if original_path is not None else "",
+                result_url="",
                 metrics={"confidence": 0.0, "processing_time_ms": 0.0},
                 warnings=[str(exc)],
             )

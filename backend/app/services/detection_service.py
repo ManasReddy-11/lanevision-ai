@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from fastapi import HTTPException, UploadFile, status
 
+from ..ai.exceptions import AIModelError
 from ..core.config import get_settings
 from ..core.logging import get_logger
 from ..cv.detectors import get_detector
@@ -55,13 +56,24 @@ class DetectionService:
         upload_dir.mkdir(parents=True, exist_ok=True)
         processed_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_name = f"{uuid.uuid4()}{validated['extension']}"
-        original_path = upload_dir / safe_name
-        original_path.write_bytes(contents)
-
+        # Decode before storing anything, so a rejected upload leaves no file behind.
         frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or corrupted image")
+
+        detector = get_detector(algorithm)
+        if algorithm == "ai":
+            try:
+                detector.require_model()
+            except AIModelError as exc:
+                detail = detector.unavailable_detail(exc)
+                self.history_service.record_detection(kind="image", algorithm=algorithm, status="failed", filename=file_name, original_url="",
+                                                      result_url="", metrics={"confidence": 0.0, "processing_time_ms": 0.0}, warnings=[detail])
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail) from exc
+
+        safe_name = f"{uuid.uuid4()}{validated['extension']}"
+        original_path = upload_dir / safe_name
+        original_path.write_bytes(contents)
 
         try:
             validated_frame = validate_frame(frame)
@@ -78,7 +90,6 @@ class DetectionService:
             )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-        detector = get_detector(algorithm)
         result = detector.detect(validated_frame)
         processed_path = processed_dir / safe_name
         success = cv2.imwrite(str(processed_path), result.processed_frame)

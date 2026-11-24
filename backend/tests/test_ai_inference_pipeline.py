@@ -16,6 +16,7 @@ from app.cv.detectors import get_detector
 from app.cv.types import LaneDetectionResult
 from app.main import app
 from app.services.video_processing_service import VideoProcessingService
+from app.utils.video_validation import VideoValidationError
 
 
 @pytest.fixture(autouse=True)
@@ -81,16 +82,16 @@ def test_video_loads_the_model_once_and_reports_the_model_that_ran(tmp_path, mon
     assert 0.0 <= response.metrics.vehicle_offset_available_rate <= 1.0
 
 
-def test_video_reports_an_unavailable_model_instead_of_claiming_ai_inference(tmp_path, monkeypatch) -> None:
+def test_video_refuses_an_unavailable_model_instead_of_claiming_ai_inference(tmp_path, monkeypatch) -> None:
     detector = get_ai_detector(_config(tmp_path / "missing.pth"))
     monkeypatch.setattr("app.services.video_processing_service.get_detector", lambda mode: detector)
 
-    response = VideoProcessingService().process_upload(_video(tmp_path, frames=3), algorithm="ai")
+    with pytest.raises(VideoValidationError) as raised:
+        VideoProcessingService().process_upload(_video(tmp_path, frames=3), algorithm="ai")
 
-    assert response.ai_metadata["checkpoint_loaded"] is False
-    assert "not found" in response.ai_metadata["error"]
-    assert response.warnings == ["AI model unavailable: AI model weights were not found (3/3 frames)"]
-    assert detector.engine.loader.load_count == 0  # the missing file is detected once, not re-read per frame
+    assert raised.value.status_code == 503
+    assert raised.value.detail.startswith("AI model unavailable: AI model weights were not found (missing.pth).")
+    assert detector.engine.loader.load_count == 0  # refused before any frame was read; the missing file is never opened
 
 
 def test_video_averages_vehicle_offsets_not_lane_centre_positions(tmp_path, monkeypatch) -> None:
