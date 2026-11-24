@@ -174,7 +174,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     (out_dir / "examples").mkdir(parents=True, exist_ok=True)
     only_names = {path.name for path in Path(args.only_names).glob("*.png")} if args.only_names else None
     geometry = LaneGeometryConfig(**json.loads(args.geometry)) if args.geometry else LaneGeometryConfig()
-    config = AIConfig(enabled=True, model_path=str(checkpoint), device=args.device, mask_threshold=geometry.probability_threshold)
+    # Pixel metrics use the engine's mask at the training threshold (AIConfig default 0.5), as training scores them;
+    # lane extraction applies its own geometry.probability_threshold to the probability map.
+    config = AIConfig(enabled=True, model_path=str(checkpoint), device=args.device)
     engine = AIInferenceEngine(config)
     metadata = engine.loader.load()
     engine.run(np.zeros((720, 1280, 3), dtype=np.uint8))  # warm-up, so model loading is not timed as inference
@@ -239,6 +241,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint": {"path": str(checkpoint), "sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
                        "epoch": torch.load(str(checkpoint), map_location="cpu").get("epoch")},
         "device": metadata.device,
+        "pixel_metric_threshold": config.mask_threshold,
         "geometry": {name: getattr(geometry, name) for name in geometry.__slots__},
         "extend_bottom": bool(args.extend_bottom),
         "environment": {"python": platform.python_version(), "torch": torch.__version__, "platform": platform.platform()},

@@ -96,6 +96,7 @@ def test_run_scores_a_checkpoint_end_to_end(tmp_path: Path) -> None:
     assert 0.0 <= summary["tusimple"]["accuracy"] <= 1.0
     assert set(summary["pixel"]) == {"dice", "iou", "precision", "recall"}
     assert summary["checkpoint"]["epoch"] == 1
+    assert summary["pixel_metric_threshold"] == 0.5  # same threshold as training metrics, independent of lane extraction
     predictions = [json.loads(line) for line in (tmp_path / "out" / "predictions.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [p["raw_file"] for p in predictions] == [r["raw_file"] for r in records]
     assert all(len(lane) == len(Y) for p in predictions for lane in p["lanes"])
