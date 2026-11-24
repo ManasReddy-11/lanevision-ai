@@ -12,16 +12,25 @@ from .metrics.lane_metrics import (
     calculate_lane_center,
     calculate_vehicle_offset,
     calculate_vehicle_offset_normalized,
+    line_x_at,
+    reference_row,
 )
 from .stages.color_filter import apply_lane_color_filter
 from .stages.edges import detect_edges
 from .stages.hough import detect_hough_lines
-from .stages.lane_fitting import classify_lane_segments, fit_lane_line, is_horizontal_line
+from .stages.lane_fitting import fit_lane_line, is_horizontal_line
 from .stages.overlay import draw_lane_overlay
 from .stages.preprocessing import gaussian_blur, resize_if_required, to_grayscale
 from .stages.roi import apply_roi
 from .types import LaneDetectionResult, LaneLine, LaneSegment
 from .utils.validation import CVException, validate_frame
+
+
+def _scale_lane(lane: LaneLine | None, scale_x: float, scale_y: float) -> LaneLine | None:
+    if lane is None or (scale_x == 1.0 and scale_y == 1.0):
+        return lane
+    return LaneLine(x1=lane.x1 * scale_x, y1=lane.y1 * scale_y, x2=lane.x2 * scale_x, y2=lane.y2 * scale_y,
+                    slope=lane.slope * scale_y / scale_x, confidence=lane.confidence, support_segments=lane.support_segments)
 
 
 class ClassicLaneDetector:
@@ -52,28 +61,35 @@ class ClassicLaneDetector:
                 continue
             filtered_segments.append(segment)
 
-        left_segments = [segment for segment in filtered_segments if (segment.x1 + segment.x2) / 2.0 < resized.shape[1] / 2.0]
-        right_segments = [segment for segment in filtered_segments if (segment.x1 + segment.x2) / 2.0 > resized.shape[1] / 2.0]
-        left_lane, right_lane = classify_lane_segments(left_segments, right_segments, resized.shape[1], resized.shape[0])
+        # A segment supports the boundary on its side of the frame only if it leans the way that boundary does in the
+        # image (y grows downwards): the left boundary rises to the right (negative slope), the right one to the left.
+        half_width = resized.shape[1] / 2.0
+        left_segments = [segment for segment in filtered_segments if (segment.x1 + segment.x2) / 2.0 < half_width and segment.slope < 0]
+        right_segments = [segment for segment in filtered_segments if (segment.x1 + segment.x2) / 2.0 > half_width and segment.slope > 0]
+        roi_ys = [y for _, y in self.config.roi_polygon]
+        roi_top_y = int(round(min(roi_ys) * resized.shape[0]))
+        roi_bottom_y = int(round(max(roi_ys) * resized.shape[0]))
+        left_lane = fit_lane_line(left_segments, resized.shape[1], resized.shape[0], roi_top_y, roi_bottom_y)
+        right_lane = fit_lane_line(right_segments, resized.shape[1], resized.shape[0], roi_top_y, roi_bottom_y)
 
-        if left_lane is None and right_segments:
-            left_lane = fit_lane_line(right_segments, resized.shape[1], resized.shape[0], int(resized.shape[0] * 0.2), resized.shape[0])
-        if right_lane is None and left_segments:
-            right_lane = fit_lane_line(left_segments, resized.shape[1], resized.shape[0], int(resized.shape[0] * 0.2), resized.shape[0])
+        # Report geometry in the coordinates of the input frame (the pipeline may have downscaled it).
+        scale_x = validated.shape[1] / resized.shape[1]
+        scale_y = validated.shape[0] / resized.shape[0]
+        left_lane = _scale_lane(left_lane, scale_x, scale_y)
+        right_lane = _scale_lane(right_lane, scale_x, scale_y)
+        frame_height, frame_width = validated.shape[:2]
+        overlay, polygon = draw_lane_overlay(validated, left_lane, right_lane, self.config)
 
-        if left_lane is None:
-            left_lane = fit_lane_line(left_segments, resized.shape[1], resized.shape[0], int(resized.shape[0] * 0.2), resized.shape[0])
-        if right_lane is None:
-            right_lane = fit_lane_line(right_segments, resized.shape[1], resized.shape[0], int(resized.shape[0] * 0.2), resized.shape[0])
-
-        overlay, polygon = draw_lane_overlay(resized, left_lane, right_lane, self.config)
-        frame_center_x = resized.shape[1] / 2.0
-        lane_center_x = calculate_lane_center(
-            left_lane.x1 if left_lane is not None else None,
-            right_lane.x1 if right_lane is not None else None,
-        )
+        frame_center_x = frame_width / 2.0
+        reference_y = reference_row(frame_height)
+        left_x = line_x_at(left_lane.x1, left_lane.y1, left_lane.x2, left_lane.y2, reference_y) if left_lane is not None else None
+        right_x = line_x_at(right_lane.x1, right_lane.y1, right_lane.x2, right_lane.y2, reference_y) if right_lane is not None else None
+        lane_center_x = calculate_lane_center(left_x, right_x)
+        lane_width = right_x - left_x if left_x is not None and right_x is not None else None
+        if lane_width is not None and lane_width <= 0:
+            lane_center_x, lane_width = None, None  # the fitted boundaries cross before the reference row
         vehicle_offset_pixels = calculate_vehicle_offset(frame_center_x, lane_center_x)
-        vehicle_offset_normalized = calculate_vehicle_offset_normalized(frame_center_x, lane_center_x)
+        vehicle_offset_normalized = calculate_vehicle_offset_normalized(vehicle_offset_pixels, lane_width)
 
         confidence = calculate_confidence(
             supporting_segment_count=float(len(filtered_segments)),
@@ -83,9 +99,16 @@ class ClassicLaneDetector:
             slope_consistency=0.8 if left_lane is not None and right_lane is not None else 0.5,
         )
 
+        if left_lane is None and right_lane is None:
+            confidence = 0.0
+
         warnings: list[str] = []
-        if left_lane is None or right_lane is None:
+        if left_lane is None and right_lane is None:
+            warnings.append("No lane boundary was detected")
+        elif left_lane is None or right_lane is None:
             warnings.append("Only one lane boundary was detected")
+        elif vehicle_offset_pixels is None:
+            warnings.append("Vehicle offset unavailable: the lane boundaries cross above the reference row")
         if not filtered_segments:
             warnings.append("No Hough line segments met the filtering criteria")
 
@@ -112,6 +135,7 @@ class ClassicLaneDetector:
             vehicle_offset_pixels=vehicle_offset_pixels,
             vehicle_offset_normalized=vehicle_offset_normalized,
             confidence=confidence,
+            lane_width_bottom_pixels=lane_width,
             processing_time_ms=(time.perf_counter() - started_at) * 1000.0,
             detected_segment_count=len(filtered_segments),
             warnings=warnings,

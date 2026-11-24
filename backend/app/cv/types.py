@@ -13,7 +13,6 @@ class LaneSegment:
     x1: float
     y1: float
     x2: float
-    x2: float
     y2: float
     slope: Optional[float] = None
     length: Optional[float] = None

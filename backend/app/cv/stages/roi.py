@@ -7,15 +7,10 @@ from ..config import LaneDetectionConfig
 
 
 def get_roi_vertices(width: int, height: int, config: LaneDetectionConfig | None = None) -> list[tuple[float, float]]:
-    """Create normalized trapezoidal ROI coordinates for the frame."""
+    """Pixel coordinates of the trapezoidal ROI, in the order of config.roi_polygon (bottom-left, top-left, top-right,
+    bottom-right), which traces the trapezoid's outline without crossing itself."""
     config = config or LaneDetectionConfig()
-    polygon = list(config.roi_polygon)
-    return [
-        (int(round(width * polygon[0][0])), int(round(height * polygon[0][1]))),
-        (int(round(width * polygon[1][0])), int(round(height * polygon[1][1]))),
-        (int(round(width * polygon[3][0])), int(round(height * polygon[3][1]))),
-        (int(round(width * polygon[2][0])), int(round(height * polygon[2][1]))),
-    ]
+    return [(int(round(width * x)), int(round(height * y))) for x, y in config.roi_polygon]
 
 
 def get_roi_vertices_ordered(width: int, height: int, config: LaneDetectionConfig | None = None) -> list[tuple[float, float]]:
