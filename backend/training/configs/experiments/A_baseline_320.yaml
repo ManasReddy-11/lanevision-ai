@@ -1,5 +1,5 @@
 # Experiment A: the baseline training configuration (320x160, BCE + Dice, plateau schedule, batch 4) with early stopping,
-# best-epoch restore, fixed seeds and selection on validation TuSimple accuracy. Reference for B-D; run with seeds 42 and 7
+# best-epoch restore, fixed seeds, mixed precision and selection on validation TuSimple accuracy. Reference for B-D; run with seeds 42 and 7
 # to measure seed-to-seed variation. Paths are set by the job: dataset_root, tusimple_val_labels, save_dir, output_dir.
 training:
   experiment_name: A_baseline_320
@@ -13,7 +13,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: plateau
-  amp: false
+  amp: true
   monitor: tusimple_accuracy
   early_stopping: true
   patience: 6
