@@ -137,9 +137,12 @@ Expected writable artifacts:
 - `/kaggle/working/models/lane_segmentation.pth`
 
 Current persistence behavior:
-- best checkpoint saves on validation improvement
-- last checkpoint saves once per epoch
-- resuming from `lane_segmentation_last.pth` is supported
+- best checkpoint saves on validation improvement (the monitored validation metric)
+- last checkpoint saves once per epoch, with optimizer, scheduler, AMP scaler, early-stopping and RNG state
+- resuming from `lane_segmentation_last.pth` continues the same run exactly
+- `lane_segmentation.pth` (`production_checkpoint_path`) is written once, at the end, from the best epoch, and never
+  over an existing file unless `overwrite_production: true`
+- per-epoch logs, the resolved configuration and curves are written to `output_dir` (see backend/training/README.md)
 
 ## 8. Start or resume full training
 
@@ -156,6 +159,9 @@ python -m backend.training.train --config backend/training/configs/kaggle.yaml -
 ```
 
 ## 9. Evaluate the best checkpoint
+
+Run this only after the model has been chosen on the validation split: the test split is for the final report, never
+for choosing between runs or settings.
 
 ```bash
 python -m backend.training.evaluate --dataset /kaggle/working/tusimple_prepared/test --checkpoint /kaggle/working/models/lane_segmentation_best.pth --device auto --batch-size 4
