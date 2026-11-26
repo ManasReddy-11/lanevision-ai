@@ -172,9 +172,12 @@ baseline run); Kaggle's free GPU quota has no monetary cost. Order within the se
 epoch-8 termination rule has its reference, then A (seed 7), C1, C2, D1, D2, and B last (the longest). The early-
 termination time limit per epoch is twice the estimate: 150 s for A, C and D, 510 s for B.
 
-Reproducible runner (prepared, not launched): a Kaggle script job built from a template that clones the fixed commit,
-prepares and checks the official split (expected counts 3,268 / 351 / 2,770), trains the listed configs in order with
-the paths supplied by `--set`, enforces the termination rules above, and writes only `runs/` and a results file.
+The feature branch contains the experiment configs and the [Kaggle preflight workflow](../gpu-training-workflow.md).
+Before launching A–D, make the Kaggle runner available in the workspace and verify it pins the code revision, checks
+the official split counts (3,268 / 351 / 2,770), and supplies separate `save_dir` and `output_dir` paths for each run,
+including the two A seeds. The runner must enforce the per-epoch time limit and epoch-8 comparison and handle the OOM
+retry. Keep `evaluate_test: false` and `production_checkpoint_path: null` for every run. Install `matplotlib` in the
+Kaggle runtime to generate `curves.png`.
 
 ## Decision requested
 

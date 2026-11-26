@@ -7,6 +7,8 @@ const api = axios.create({
   timeout: 10000,
 });
 
+export const mediaUrl = (path) => api.getUri({ url: path });
+
 export const checkHealth = async () => {
   const response = await api.get('/api/health');
   return response.data;

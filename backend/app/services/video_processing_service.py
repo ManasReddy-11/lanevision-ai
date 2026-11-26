@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -38,9 +39,27 @@ class VideoProcessingService:
         self.history_service = HistoryService(database_url=settings.database_url)
         self.history_service.initialize()
 
-    def _make_output_path(self, extension: str, prefix: str = "video") -> Path:
-        suffix = ".mp4" if extension.lower() == ".mp4" else extension.lower()
-        return Path(settings.processed_dir) / f"{prefix}-{uuid.uuid4()}{suffix}"
+    def _make_output_path(self) -> Path:
+        return Path(settings.processed_dir) / f"video-{uuid.uuid4()}.mp4"
+
+    def _encode_for_browser(self, output_path: Path) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return
+
+        encoded_path = output_path.with_suffix(".browser.processing.mp4")
+        try:
+            subprocess.run(
+                [ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(output_path),
+                 "-an", "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
+                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(encoded_path)],
+                check=True, capture_output=True, timeout=120,
+            )
+            encoded_path.replace(output_path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Browser encoding failed for %s: %s", output_path.name, exc)
+        finally:
+            self._cleanup_artifact(encoded_path)
 
     def _build_writer(self, output_path: Path, width: int, height: int, fps: float) -> cv2.VideoWriter | None:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -258,7 +277,8 @@ class VideoProcessingService:
             if frames_written <= 0:
                 raise VideoValidationError(500, "No frames were written to the output video")
 
-            final_output_path = self._make_output_path(validated["extension"])
+            self._encode_for_browser(temp_output_path)
+            final_output_path = self._make_output_path()
             os.replace(temp_output_path, final_output_path)
 
             valid_output, validation_error, validated_frame_count, validated_width, validated_size, validated_fps = self._validate_output_artifact(final_output_path, width, height, float(fps))
@@ -346,9 +366,12 @@ class VideoProcessingService:
                 filename=file.filename or "video",
                 original_url=f"/media/uploads/{safe_name}",
                 result_url=response.result.url,
+                video_fps=response.metrics.source_fps,
+                both_lane_detection_rate=response.metrics.both_lane_detection_rate,
                 metrics={
                     "confidence": float(response.metrics.average_confidence or 0.0),
                     "processing_time_ms": float(response.metrics.average_processing_time_ms or 0.0),
+                    "average_processing_fps": response.metrics.average_processing_fps,
                     "frames_processed": int(response.metrics.frames_processed),
                     "detection_success_rate": float(response.metrics.detection_success_rate or 0.0),
                 },

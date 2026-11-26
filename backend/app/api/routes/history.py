@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
 
 from ...core.config import get_settings
 from ...services.history_service import HistoryService
@@ -28,7 +29,8 @@ def list_detections(
     service: HistoryService = Depends(get_history_service),
 ) -> dict[str, Any]:
     try:
-        return service.list_detections(page=page, page_size=page_size, media_type=media_type, algorithm=algorithm, status=status, date_from=date_from, date_to=date_to)
+        result = service.list_detections(page=page, page_size=page_size, media_type=media_type, algorithm=algorithm, status=status, date_from=date_from, date_to=date_to)
+        return jsonable_encoder(result)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

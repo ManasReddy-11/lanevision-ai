@@ -71,6 +71,19 @@ def test_run_writes_structured_logs(tmp_path, data) -> None:
     assert "test_metrics_after_selection" not in result["summary"]  # the test split is only read when asked
 
 
+@pytest.mark.parametrize("phase", ["training", "validation"])
+def test_nonfinite_loss_stops_before_saving_a_checkpoint(tmp_path, data, monkeypatch, phase) -> None:
+    if phase == "training":
+        monkeypatch.setattr("backend.training.train.build_loss", lambda config: lambda logits, masks: logits.mean() * float("nan"))
+    else:
+        monkeypatch.setattr("backend.training.train.validate", lambda *args: (float("inf"), {}))
+
+    config = _config(tmp_path, epochs=1)
+    with pytest.raises(RuntimeError, match=f"Non-finite {phase} loss at epoch 1"):
+        train(config)
+    assert not list(Path(config.save_dir).glob("*.pth"))
+
+
 def test_same_seed_gives_the_same_run(tmp_path, data) -> None:
     first = train(_config(tmp_path, epochs=2, output_dir=str(tmp_path / "a"), save_dir=str(tmp_path / "a")))["history"]
     second = train(_config(tmp_path, epochs=2, output_dir=str(tmp_path / "b"), save_dir=str(tmp_path / "b")))["history"]

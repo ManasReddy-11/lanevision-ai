@@ -33,6 +33,17 @@ def test_valid_video_upload_returns_video_response(tmp_path):
     assert data["metrics"]["frames_processed"] >= 1
     assert data["metrics"]["source_fps"] >= 0
 
+    history = client.get("/api/history/detections")
+    assert history.status_code == 200
+    run = next(run for run in history.json()["items"] if run["result_url"] == data["result"]["url"])
+    assert run["video_fps"] == data["metrics"]["source_fps"]
+    assert run["both_lane_detection_rate"] == data["metrics"]["both_lane_detection_rate"]
+    assert run["metrics"]["average_processing_fps"] == data["metrics"]["average_processing_fps"]
+
+    media = client.get(data["result"]["url"], headers={"Range": "bytes=0-63"})
+    assert media.status_code == 206
+    assert media.headers["content-type"] == "video/mp4"
+
 
 def test_unsupported_video_extension_is_rejected():
     response = client.post(

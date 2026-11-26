@@ -51,6 +51,7 @@ app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(detection_router, prefix=settings.api_prefix)
 app.include_router(video_detection_router, prefix=settings.api_prefix)
 app.include_router(history_router, prefix=settings.api_prefix)
+app.include_router(history_router, prefix=f"{settings.api_prefix}/history")
 
 upload_dir = Path(settings.upload_dir).resolve()
 processed_dir = Path(settings.processed_dir).resolve()

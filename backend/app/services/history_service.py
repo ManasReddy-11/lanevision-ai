@@ -323,7 +323,11 @@ class HistoryService:
             confs = [float(run.confidence) for run in runs if run.confidence is not None]
             pctimes = [float(run.processing_time_ms) for run in runs if run.processing_time_ms is not None]
             video_runs = [run for run in runs if run.media_type == "video"]
-            fps_values = [float(run.video_fps) for run in video_runs if run.video_fps is not None]
+            processing_rates = [
+                run.metrics_json.get("average_processing_fps", run.video_fps)
+                for run in video_runs
+            ]
+            fps_values = [float(rate) for rate in processing_rates if rate is not None]
             success_rates = [float(run.detection_success_rate) for run in video_runs if run.detection_success_rate is not None]
             both_lane_rates = [float(run.both_lane_detection_rate) for run in video_runs if run.both_lane_detection_rate is not None]
             activity_timeline = []

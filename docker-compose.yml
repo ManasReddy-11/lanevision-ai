@@ -1,6 +1,6 @@
 services:
   backend:
-    image: python:3.11-slim
+    build: ./backend
     working_dir: /app
     volumes:
       - ./backend:/app
@@ -10,22 +10,29 @@ services:
       ENVIRONMENT: development
       DEBUG: "true"
       API_PREFIX: /api
-      FRONTEND_URL: http://localhost:5173
+      FRONTEND_URL: http://localhost:5173,http://127.0.0.1:5173
       DATABASE_URL: sqlite:///./lanevision.db
-      UPLOAD_DIR: ./uploads
-      PROCESSED_DIR: ./processed
+      UPLOAD_DIR: /app/uploads
+      PROCESSED_DIR: /app/processed
       MAX_UPLOAD_SIZE_MB: 50
-    command: sh -c "pip install -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      AI_ENABLED: ${AI_ENABLED:-true}
+      AI_MODEL_PATH: ${AI_MODEL_PATH:-}
+      AI_DEVICE: ${AI_DEVICE:-cpu}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   frontend:
     image: node:20-alpine
     working_dir: /app
     volumes:
       - ./frontend:/app
+      - frontend_dependencies:/app/node_modules
     environment:
       VITE_API_BASE_URL: http://localhost:8000
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
+
+volumes:
+  frontend_dependencies:

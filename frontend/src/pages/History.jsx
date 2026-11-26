@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, Clock3, ScanLine } from 'lucide-react';
-import api from '../services/api';
+import { getAnalytics, getDetectionHistory, mediaUrl } from '../services/api';
 
 function History() {
   const [runs, setRuns] = useState([]);
@@ -10,12 +10,12 @@ function History() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [historyResponse, analyticsResponse] = await Promise.all([
-          api.get('/api/history'),
-          api.get('/api/history/analytics'),
+        const [history, analytics] = await Promise.all([
+          getDetectionHistory(),
+          getAnalytics(),
         ]);
-        setRuns(historyResponse.data);
-        setAnalytics(analyticsResponse.data);
+        setRuns(history.items);
+        setAnalytics(analytics);
       } catch (err) {
         setError(err?.message || 'Unable to load history');
       }
@@ -70,8 +70,8 @@ function History() {
                   <p className="mt-2 text-sm text-slate-400">{run.kind} • {run.algorithm} • {run.created_at}</p>
                 </div>
                 <div className="text-sm text-slate-400">
-                  <div>Confidence: {(run.metrics?.confidence ?? 0) * 100}%</div>
-                  <div>Result: <a className="text-sky-400" href={run.result_url} target="_blank" rel="noreferrer">Open artifact</a></div>
+                  <div>Confidence: {run.confidence == null ? 'N/A' : `${(run.confidence * 100).toFixed(1)}%`}</div>
+                  {run.result_url && <a className="text-sky-400" href={mediaUrl(run.result_url)} target="_blank" rel="noreferrer">Open result</a>}
                 </div>
               </div>
             ))}

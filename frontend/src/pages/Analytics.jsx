@@ -66,10 +66,10 @@ function buildAlgorithmData(perAlgorithm = {}) {
   ];
 }
 
-function buildMediaData(analytics = {}) {
+function buildMediaData(analytics) {
   return [
-    { name: 'Images', value: asNumber(analytics.total_images) },
-    { name: 'Videos', value: asNumber(analytics.total_videos) },
+    { name: 'Images', value: asNumber(analytics?.total_images) },
+    { name: 'Videos', value: asNumber(analytics?.total_videos) },
   ];
 }
 

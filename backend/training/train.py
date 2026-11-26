@@ -256,13 +256,18 @@ def train(config: TrainingConfig, resume: str | None = None, check_content: bool
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
                     logits = model(images)
                 loss = loss_fn(logits.float(), masks)
+                loss_value = loss.item()
+                if not math.isfinite(loss_value):
+                    raise RuntimeError(f"Non-finite training loss at epoch {epoch}: {loss_value}")
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-                running_loss += loss.item() * images.size(0)
+                running_loss += loss_value * images.size(0)
             train_seconds = time.perf_counter() - started
 
             val_loss, val_metrics = validate(model, val_loader, device, config, loss_fn, val_records)
+            if not math.isfinite(val_loss):
+                raise RuntimeError(f"Non-finite validation loss at epoch {epoch}: {val_loss}")
             learning_rate = optimizer.param_groups[0]["lr"]
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_metrics[config.monitor])
